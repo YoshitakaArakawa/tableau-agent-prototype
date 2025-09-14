@@ -63,28 +63,78 @@
     sum.textContent = 'Streaming... (expand/collapse)';
     const events = document.createElement('div');
     events.className = 'stream-events';
+    // Natural-language narration (smaller text)
+    const narr = document.createElement('div');
+    narr.className = 'stream-narr';
+    // Raw deltas (for debug/partial text if any)
     const delta = document.createElement('pre');
     delta.className = 'stream-delta';
-    const debug = document.createElement('div');
-    debug.className = 'stream-debug';
-    const debugTitle = document.createElement('div');
-    debugTitle.className = 'stream-debug-title';
-    debugTitle.textContent = 'Debug';
-    debug.appendChild(debugTitle);
     panel.appendChild(sum);
     panel.appendChild(events);
-    panel.appendChild(debug);
+    panel.appendChild(narr);
     panel.appendChild(delta);
     wrap.appendChild(panel);
     chatEl.appendChild(wrap);
     chatEl.scrollTop = chatEl.scrollHeight;
+    const narrLines = Object.create(null);
     return {
       addNote: (text) => { const p = document.createElement('div'); p.className = 'note'; p.textContent = text; events.appendChild(p); },
       appendDelta: (text) => { delta.textContent += text; delta.scrollTop = delta.scrollHeight; },
-      addWarn: (text) => { const p = document.createElement('div'); p.className = 'warn'; p.textContent = text; debug.appendChild(p); },
-      addDebug: (text) => { const p = document.createElement('div'); p.className = 'debug'; p.textContent = text; debug.appendChild(p); },
+      addWarn: (text) => { const p = document.createElement('div'); p.className = 'warn'; p.textContent = text; events.appendChild(p); },
+      narrStart: (key, text) => {
+        try {
+          if (!narrLines[key]) {
+            const line = document.createElement('div');
+            line.className = 'narr-line';
+            line.textContent = text;
+            narr.appendChild(line);
+            narrLines[key] = line;
+          } else {
+            narrLines[key].textContent = text;
+          }
+        } catch {}
+      },
+      narrAppend: (key, extra) => {
+        try {
+          const line = narrLines[key];
+          if (line) {
+            line.textContent = (line.textContent || '') + ' ' + extra;
+          } else {
+            // fallback: create
+            const l = document.createElement('div');
+            l.className = 'narr-line';
+            l.textContent = extra;
+            narr.appendChild(l);
+            narrLines[key] = l;
+          }
+        } catch {}
+      },
       finalize: () => { sum.textContent = 'Streaming complete'; panel.open = false; },
     };
+  }
+
+  function narrateStep(type, detail){
+    const map = {
+      'triage:start': 'Thinking through your request...',
+      'triage:done': 'Got it. Moving to the next step.',
+      'metadata:start': 'Looking up the dataset’s fields...',
+      'metadata:done': 'Metadata is ready.',
+      'plan:start': 'Designing the data query...',
+      'plan:done': 'Query is ready.',
+      'fetch:start': 'Fetching and analyzing the data...',
+      'fetch:done': 'Data fetch and analysis complete.',
+      'summarize:start': 'Summarizing the findings...'
+    };
+    let line = map[type];
+    // Add a compact description of what will be fetched when plan is done
+    try {
+      if (type === 'plan:done') {
+        const qs = detail && typeof detail.query_summary === 'string' ? detail.query_summary : '';
+        if (qs) line = `${line} I will compute ${qs}.`;
+      }
+    } catch {}
+    if (line) return line + "\n";
+    return '';
   }
 
   function start(){
@@ -144,42 +194,42 @@
             const id = data?.detail?.conversationId;
             if (id && typeof id === 'string') { conversationId = id; try { localStorage.setItem('chat-conv-id', id); } catch {} }
             break; }
-          case 'triage:start': setChip('triage','active'); break;
-          case 'triage:done': setChip('triage','done'); stream.addNote('Triage completed'); break;
-          case 'metadata:start': setChip('metadata','active'); break;
+          case 'triage:start': setChip('triage','active'); { stream.narrStart('triage', 'Thinking through your request...'); } break;
+          case 'triage:done': setChip('triage','done'); { stream.narrAppend('triage', 'Got it. Moving to the next step.'); } break;
+          case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset\u2019s fields...'); } break;
           case 'triage:delta': stream.appendDelta(`[triage] ${data?.detail?.text || ''}`); break;
           case 'metadata:delta': stream.appendDelta(`[metadata] ${data?.detail?.text || ''}`); break;
           case 'plan:delta': stream.appendDelta(`[plan] ${data?.detail?.text || ''}`); break;
           case 'fetch:delta': stream.appendDelta(`[fetch] ${data?.detail?.text || ''}`); break;
-          case 'metadata:done': setChip('metadata','done'); stream.addNote('Metadata loaded'); break;
-          case 'plan:start': setChip('plan','active'); stream.addNote('Planning started'); break;
+          case 'metadata:done': setChip('metadata','done'); { stream.narrAppend('metadata', 'Metadata is ready.'); } break;
+          case 'plan:start': setChip('plan','active'); { stream.narrStart('plan', 'Designing the data query...'); } break;
           case 'plan:error': {
             setChip('plan','error');
             const n = Array.isArray(data?.detail?.issues) ? data.detail.issues.length : 0;
-            stream.addNote(`Plan validation failed (${n} issues). Using safe fallback.`);
+            stream.addWarn(`Plan validation failed (${n} issues). Using safe fallback.`);
             break; }
           case 'plan:done': {
             setChip('plan','done');
-            stream.addNote('Plan finalized');
-            if (data?.detail?.query_summary) stream.addDebug(`Query: ${data.detail.query_summary}`);
+            const qs = data?.detail?.query_summary;
+            const extra = qs ? `Query is ready. I will compute ${qs}.` : 'Query is ready.';
+            stream.narrAppend('plan', extra);
             break; }
-          case 'fetch:start': setChip('fetch','active'); stream.addNote('Fetching started'); break;
+          case 'fetch:start': setChip('fetch','active'); { stream.narrStart('fetch', 'Fetching and analyzing the data...'); } break;
           case 'fetch:warning': {
             const msg = data?.detail?.message || '';
             const hint = data?.detail?.hint;
             stream.addWarn(hint ? `${msg} (${hint})` : msg);
             break; }
-          case 'fetch:retry': {
-            const rsn = data?.detail?.reason || '';
-            const hint = data?.detail?.hint;
-            stream.addWarn(hint ? `Fetch retry: ${hint}` : `Fetch retry: ${rsn}`);
-            break; }
-          case 'fetch:done': setChip('fetch','done'); stream.addNote('Data fetched'); break;
-          case 'summarize:start': setChip('summarize','active'); stream.addNote('Summarization started'); break;
+          case 'fetch:retry': { const rsn = data?.detail?.reason || ''; const hint = data?.detail?.hint; stream.addWarn(hint ? `Fetch retry: ${hint}` : `Fetch retry: ${rsn}`); break; }
+          case 'fetch:done': setChip('fetch','done'); { stream.narrAppend('fetch', 'Data fetch and analysis complete.'); } break;
+          case 'summarize:start': setChip('summarize','active'); { stream.narrStart('summarize', 'Summarizing the findings...'); } break;
           case 'final:delta': { const text = data?.detail?.text || ''; stream.appendDelta(text); break; }
           case 'final': {
             setChip('summarize','done'); setChip('final','done');
-            const text = data?.detail?.reply || '';
+            let text = data?.detail?.reply;
+            if (typeof text !== 'string') {
+              try { text = JSON.stringify(text ?? data?.detail ?? {}, null, 2); } catch { text = String(text ?? '') }
+            }
             stream.finalize();
             bubble('assistant', renderMarkdown(text));
             clientLog.add('stream closed (ok)');

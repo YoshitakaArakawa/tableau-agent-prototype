@@ -22,6 +22,7 @@ body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; }
 .stream-panel summary { cursor: pointer; font-weight: 600; }
 .stream-events { font-size: .9rem; opacity: .9; margin: .25rem 0 .5rem; }
 .stream-events .note { margin: .15rem 0; }
+.stream-narr { font-size: .85rem; opacity: .95; white-space: pre-wrap; margin-bottom: .25rem; }
 .stream-delta { max-height: 220px; overflow: auto; }
 .stream-debug { font-size: .85rem; opacity: .85; border-top: 1px dashed #8886; padding-top: .4rem; margin-top: .4rem; }
 .stream-debug-title { font-weight: 600; opacity: .9; margin-bottom: .2rem; }

@@ -5,7 +5,8 @@
 
 import fs from "fs";
 import path from "path";
-import { tableauMcp } from "../mcp/tableau";
+import { getTableauMcp } from "../mcp/tableau";
+import { appendAnalysisLog } from "./logger";
 
 export type NormalizedField = {
   fieldCaption: string;
@@ -128,16 +129,21 @@ function normalizeFields(raw: any): NormalizedField[] {
 }
 
 async function fetchViaMcp(datasourceLuid: string): Promise<CachedEntry | null> {
-  if (!tableauMcp) return null;
+  const tableauMcp = getTableauMcp();
+  if (!tableauMcp) { try { appendAnalysisLog(`[metadata] mcp_unavailable`); } catch {}; return null; }
   const tool = 'get-datasource-metadata';
   const args = { datasourceLuid } as any;
   try {
+    try { appendAnalysisLog(`[metadata] call tool=${tool} ds=${datasourceLuid}`); } catch {}
     const res: any = await (tableauMcp as any).callTool(tool, args);
     const json = extractResultJson(res);
     const normalized: NormalizedField[] = normalizeFields(json ?? res);
+    try { appendAnalysisLog(`[metadata] result count=${normalized.length}`); } catch {}
     const entry: CachedEntry = { raw: json ?? res, normalized, ts: now() };
     return entry;
-  } catch {
+  } catch (e: any) {
+    try { appendAnalysisLog(`[metadata] fetch_error ds=${datasourceLuid} message=${e?.message || String(e)}`); } catch {}
+    lastErrorMsg = e?.message || String(e);
     return null;
   }
 }
@@ -146,6 +152,7 @@ export async function getMetadataCached(datasourceLuid: string, force?: boolean)
   const key = datasourceLuid;
   const hit = cache.get(key);
   if (!force && hit && !isExpired(hit) && Array.isArray(hit.normalized) && hit.normalized.length > 0) {
+    try { appendAnalysisLog(`[metadata] cache_hit count=${hit.normalized.length}`); } catch {}
     return hit;
   }
   if (!force) {
@@ -153,6 +160,7 @@ export async function getMetadataCached(datasourceLuid: string, force?: boolean)
     if (disk) {
       const entry: CachedEntry = { raw: null, normalized: disk.normalized, ts: disk.mtimeMs };
       cache.set(key, entry);
+      try { appendAnalysisLog(`[metadata] disk_hit count=${entry.normalized.length}`); } catch {}
       return entry;
     }
   }
@@ -160,10 +168,16 @@ export async function getMetadataCached(datasourceLuid: string, force?: boolean)
   if (fresh) {
     if (Array.isArray(fresh.normalized) && fresh.normalized.length > 0) {
       cache.set(key, fresh);
-      try { writeDiskCache(datasourceLuid, fresh.normalized); } catch {}
+      try { writeDiskCache(datasourceLuid, fresh.normalized); appendAnalysisLog(`[metadata] disk_saved count=${fresh.normalized.length}`); } catch {}
+      try { appendAnalysisLog(`[metadata] cache_set count=${fresh.normalized.length}`); } catch {}
     }
     return fresh;
   }
+  try { appendAnalysisLog(`[metadata] empty_or_error ds=${datasourceLuid}`); } catch {}
   return hit || null;
 }
 
+let lastErrorMsg: string | null = null;
+export function getLastMetadataError(): string | null {
+  return lastErrorMsg;
+}

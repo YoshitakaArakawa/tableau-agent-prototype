@@ -1,4 +1,4 @@
-import { tableauMcp } from "../mcp/tableau";
+import { getTableauMcp } from "../mcp/tableau";
 
 export type QueryDatasourceParams = {
   datasourceLuid: string;
@@ -9,6 +9,7 @@ export type QueryDatasourceParams = {
 export const tableauClient = {
   async queryDatasource(params: QueryDatasourceParams): Promise<any> {
     const { datasourceLuid, query, timeoutMs = Number(process.env.TABLEAU_CLIENT_TIMEOUT_MS || 15000) } = params;
+    const tableauMcp = getTableauMcp();
     if (!tableauMcp) throw new Error("tableau_mcp_not_configured");
     const call = (tableauMcp as any).callTool('query-datasource', { datasourceLuid, query } as any);
     const timed = Promise.race([
@@ -18,4 +19,3 @@ export const tableauClient = {
     return await timed;
   }
 } as const;
-

@@ -55,7 +55,30 @@ export async function planRunner(params: {
     filters: Array.isArray(payloadObj?.query?.filters) ? payloadObj.query.filters.length : 0,
     options: payloadObj?.options,
   };
-  safeEmit(onEvent as any, { type: "plan:done", detail: { summary } });
+  // Build a compact natural-language query summary for UI narration
+  let querySummary = '';
+  try {
+    const q: any = payloadObj?.query || {};
+    const fields = Array.isArray(q.fields) ? q.fields : [];
+    const first = fields[0] || {};
+    const fieldParts: string[] = [];
+    if (first?.function && first?.fieldCaption) fieldParts.push(`${first.function}(${first.fieldCaption})`);
+    else if (first?.fieldCaption) fieldParts.push(first.fieldCaption);
+    // Date/period hint from filters
+    let period = '';
+    const filters = Array.isArray(q.filters) ? q.filters : [];
+    for (const f of filters) {
+      const t = String(f?.filterType || '').toUpperCase();
+      if (t === 'QUANTITATIVE_DATE') {
+        const min = f?.minDate; const max = f?.maxDate;
+        if (min && max) { period = ` from ${min} to ${max}`; break; }
+      } else if (t === 'DATE') {
+        const min = f?.minDate; const max = f?.maxDate;
+        if (min && max) { period = ` from ${min} to ${max}`; break; }
+      }
+    }
+    if (fieldParts.length) querySummary = `${fieldParts.join(', ')}${period}`;
+  } catch {}
+  safeEmit(onEvent as any, { type: "plan:done", detail: { summary, query_summary: querySummary } });
   return { payloadObj };
 }
-

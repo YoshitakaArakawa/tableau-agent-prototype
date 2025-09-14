@@ -3,17 +3,29 @@ import fs from 'fs';
 import path from 'path';
 import { URL } from 'url';
 import { orchestrate } from './orchestrator/run';
-import { connectTableauMcp } from './mcp/tableau';
+import { connectTableauMcp, getTableauMcp } from './mcp/tableau';
 import { appendAnalysisLog } from './utils/logger';
+import { clearAnalysisLog } from './utils/logger';
 import { setTracingDisabled } from '@openai/agents';
+import { loadDotEnvFromProjectRoot } from './utils/env';
 
-// Disable Agents SDK tracing (keep code and logs simple)
+// Load .env (no extra deps) and disable Agents SDK tracing
+loadDotEnvFromProjectRoot();
 setTracingDisabled(true);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 8787;
 
+function setCors(res: http.ServerResponse) {
+  try {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  } catch {}
+}
+
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   try {
+    setCors(res);
     const u = new URL(req.url || '/', `http://localhost:${port}`);
     let p = u.pathname;
     if (p === '/' || p === '/index.html') p = '/index.html';
@@ -34,6 +46,8 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
 }
 
 function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
+  // CORS for file:// or other origins
+  setCors(res);
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -43,16 +57,11 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   const message = String(u.searchParams.get('message') || '');
   const datasourceLuid = String(u.searchParams.get('datasourceLuid') || '');
   const limit = u.searchParams.get('limit') ? Number(u.searchParams.get('limit')) : undefined;
+  try { appendAnalysisLog(`stream:open msgLen=${message.length} ds=${datasourceLuid} limit=${limit ?? ''}`); } catch {}
   if (!message || !datasourceLuid) { res.write('data: ' + JSON.stringify({ type: 'error', detail: { message: 'message and datasourceLuid are required' } }) + '\n\n'); return res.end(); }
 
   const send = (ev: { type: string; detail?: any }) => {
     try { res.write('data: ' + JSON.stringify(ev) + '\n\n'); } catch {}
-    try {
-      if (ev?.type && !String(ev.type).endsWith(':delta')) {
-        const detail = ev?.detail ? JSON.stringify(ev.detail) : '';
-        appendAnalysisLog(`orchestrator:event type=${ev.type}${detail ? ' detail=' + detail : ''}`);
-      }
-    } catch {}
   };
 
   const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 15000);
@@ -67,6 +76,11 @@ const server = http.createServer(async (req, res) => {
   try {
     const method = (req.method || 'GET').toUpperCase();
     const u = new URL(req.url || '/', `http://localhost:${port}`);
+    if (method === 'OPTIONS') {
+      setCors(res);
+      res.writeHead(204);
+      return res.end();
+    }
     if (method === 'GET' && (u.pathname === '/chat/orchestrator/stream')) {
       return handleSse(req, res);
     }
@@ -82,8 +96,15 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, async () => {
   console.log(`Agent server listening on http://localhost:${port}`);
+  try { clearAnalysisLog(); } catch {}
   try { appendAnalysisLog(`server:listening url=http://localhost:${port}`); } catch {}
-  try { await connectTableauMcp(); console.log('Tableau MCP connected.'); appendAnalysisLog('mcp:connected'); } catch (e: any) { console.warn('MCP connect failed:', e?.message || e); }
+  try {
+    const ok = await connectTableauMcp();
+    const has = !!getTableauMcp();
+    if (ok) { console.log('Tableau MCP connected.'); appendAnalysisLog('mcp:connected'); }
+    else if (has) { console.warn('Tableau MCP failed to connect.'); appendAnalysisLog('mcp:connect_failed'); }
+    else { console.warn('Tableau MCP not configured (TABLEAU_MCP_FILEPATH missing).'); appendAnalysisLog('mcp:not_configured'); }
+  } catch (e: any) { console.warn('MCP connect failed:', e?.message || e); try { appendAnalysisLog(`mcp:connect_failed message=${e?.message || e}`); } catch {} }
 });
 
 server.on('error', (err: any) => {

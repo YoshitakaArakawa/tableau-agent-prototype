@@ -32,3 +32,11 @@ export function appendAnalysisLog(text: string) {
   } catch {}
 }
 
+export function clearAnalysisLog() {
+  try {
+    const out = process.env.ANALYSIS_LOG_FILE || path.join("logs", "analysis.txt");
+    ensureDirFor(out);
+    // Truncate file to start a fresh session
+    fs.writeFileSync(out, "", { encoding: "utf8" });
+  } catch {}
+}
