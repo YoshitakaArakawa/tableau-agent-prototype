@@ -1,3 +1,5 @@
 .env
 docs/
 AGENTS.md
+node_modules/
+dist/

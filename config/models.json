@@ -1,0 +1,6 @@
+{
+  "default": "gpt-5-mini",
+  "agents": {
+    "narrator": "gpt-5-nano"
+  }
+}
