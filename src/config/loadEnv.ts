@@ -1,8 +1,8 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
 
 // Minimal .env loader to avoid extra deps.
-function parseLine(line) {
+function parseLine(line: string): { key: string; value: string } | null {
   const idx = line.indexOf('=');
   if (idx === -1) return null;
   const key = line.slice(0, idx).trim();
@@ -14,7 +14,7 @@ function parseLine(line) {
   return { key, value };
 }
 
-function loadEnv(customPath) {
+export function loadEnv(customPath?: string): boolean {
   const envPath = path.resolve(process.cwd(), customPath || '.env');
   if (!fs.existsSync(envPath)) return false;
   const raw = fs.readFileSync(envPath, 'utf-8');
@@ -32,5 +32,4 @@ function loadEnv(customPath) {
   return true;
 }
 
-module.exports = { loadEnv };
-
+export default { loadEnv };

@@ -1,13 +1,13 @@
-const fs = require('fs');
-const path = require('path');
-const { z } = require('zod');
+import fs from 'fs';
+import path from 'path';
+import { z } from 'zod';
 
 const ModelsConfigSchema = z.object({
   default: z.string().min(1, 'config.default must be a non-empty string'),
   agents: z.record(z.string()).default({}),
 });
 
-function loadModelsConfig() {
+export function loadModelsConfig() {
   const configPath = path.resolve(process.cwd(), 'config', 'models.json');
   let raw;
   try {
@@ -34,7 +34,7 @@ function loadModelsConfig() {
   return parsed.data;
 }
 
-function resolveModel(agentName) {
+export function resolveModel(agentName?: string) {
   const cfg = loadModelsConfig();
   if (agentName && cfg.agents && Object.prototype.hasOwnProperty.call(cfg.agents, agentName)) {
     return cfg.agents[agentName];
@@ -42,8 +42,4 @@ function resolveModel(agentName) {
   return cfg.default;
 }
 
-module.exports = {
-  loadModelsConfig,
-  resolveModel,
-};
-
+export default { loadModelsConfig, resolveModel };

@@ -1,20 +1,20 @@
-const { appendFileSync, mkdirSync } = require('fs');
-const { dirname, resolve } = require('path');
-const { createLogger } = require('./logger');
-const { formatEventMessage } = require('../i18n/messages');
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname, resolve } from 'path';
+import { createLogger } from './logger';
+import { formatEventMessage } from '../i18n/messages';
 
-function ensureDir(filePath) {
+function ensureDir(filePath: string) {
   try { mkdirSync(dirname(resolve(filePath)), { recursive: true }); } catch {}
 }
 
-function writeLine(filePath, line) {
+function writeLine(filePath: string, line: string) {
   try { ensureDir(filePath); appendFileSync(filePath, line + '\n', 'utf8'); } catch {}
 }
 
-function isoNow() { return new Date().toISOString(); }
+function isoNow(): string { return new Date().toISOString(); }
 
 // Emits event to callback and appends minimal analysis log.
-function safeEmit(cb, ev, logger) {
+export function safeEmit(cb: ((ev: any) => void) | undefined, ev: any, logger?: any) {
   try { if (typeof cb === 'function') cb(ev); } catch {}
   try {
     const lg = logger || createLogger();
@@ -26,21 +26,15 @@ function safeEmit(cb, ev, logger) {
 }
 
 // Convenience: render a human message for UI from event type/detail.
-function renderMessage(ev) {
+export function renderMessage(ev: any): string {
   try { return formatEventMessage(ev?.type, ev?.detail); } catch { return ''; }
 }
 
 // Optional: write rendered messages to a file for debugging.
-function appendRenderedMessage(ev, filePath) {
+export function appendRenderedMessage(ev: any, filePath?: string) {
   const msg = renderMessage(ev);
   if (!msg) return;
   const line = `${isoNow()} ${msg}`;
   writeLine(filePath || 'logs/pseudo_stream.txt', line);
 }
-
-module.exports = {
-  safeEmit,
-  renderMessage,
-  appendRenderedMessage,
-};
-
+export default { safeEmit, renderMessage, appendRenderedMessage };

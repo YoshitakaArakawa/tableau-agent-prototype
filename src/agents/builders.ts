@@ -1,35 +1,29 @@
-const { Agent } = require('@openai/agents');
-const { resolveModel } = require('../config/modelResolver');
-const { loadPrompt } = require('../prompts/loadPrompt');
+import { Agent } from '@openai/agents';
+import { resolveModel } from '../config/modelResolver';
+import { loadPrompt } from '../prompts/loadPrompt';
 
-function buildTriageAgent() {
+export function buildTriageAgent() {
   const model = resolveModel('triage');
   const instructions = loadPrompt('triage');
   return new Agent({ name: 'triage', model, instructions });
 }
 
-function buildFieldSelectorAgent() {
+export function buildFieldSelectorAgent() {
   const model = resolveModel('field-selector');
   const instructions = loadPrompt('field-selector');
   return new Agent({ name: 'field-selector', model, instructions });
 }
 
-function buildVizqlAdapterAgent() {
+export function buildVizqlAdapterAgent() {
   const model = resolveModel('vizql-adapter');
   const instructions = loadPrompt('vizql-adapter');
   return new Agent({ name: 'vizql-adapter', model, instructions });
 }
 
-function buildResultAgent() {
+export function buildResultAgent() {
   const model = resolveModel('result');
   const instructions = loadPrompt('result');
   return new Agent({ name: 'result', model, instructions });
 }
 
-module.exports = {
-  buildTriageAgent,
-  buildFieldSelectorAgent,
-  buildVizqlAdapterAgent,
-  buildResultAgent,
-};
-
+export default { buildTriageAgent, buildFieldSelectorAgent, buildVizqlAdapterAgent, buildResultAgent };

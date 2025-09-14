@@ -1,12 +1,12 @@
-const { randomUUID } = require('crypto');
+import { randomUUID } from 'crypto';
 
-function timestamp() {
+function timestamp(): string {
   return new Date().toISOString();
 }
 
-function createLogger(traceId) {
+export function createLogger(traceId?: string) {
   const id = traceId || randomUUID();
-  const base = (level, msg, ...args) => {
+  const base = (level: string, msg: any, ...args: any[]) => {
     const prefix = `[${timestamp()}] [${id}] [${level.toUpperCase()}]`;
     // eslint-disable-next-line no-console
     console.log(prefix, msg, ...args);
@@ -18,6 +18,4 @@ function createLogger(traceId) {
     error: (msg, ...args) => base('error', msg, ...args),
   };
 }
-
-module.exports = { createLogger };
-
+export default { createLogger };

@@ -7,12 +7,12 @@
  - Prints a short session header to confirm wiring
 */
 
-const { loadEnv } = require('./config/loadEnv');
-const { resolveModel, loadModelsConfig } = require('./config/modelResolver');
-const { createLogger } = require('./utils/logger');
+import { loadEnv } from './config/loadEnv';
+import { resolveModel, loadModelsConfig } from './config/modelResolver';
+import { createLogger } from './utils/logger';
 
-function parseArgs(argv) {
-  const args = { _: [] };
+function parseArgs(argv: string[]) {
+  const args: any = { _: [] };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--help' || a === '-h') {
@@ -51,7 +51,7 @@ function printUsage() {
   );
 }
 
-async function main() {
+export async function main() {
   // Load .env into process.env (if present). No network or external deps.
   loadEnv('.env');
   const args = parseArgs(process.argv);
@@ -67,7 +67,7 @@ async function main() {
 
   try {
     if (args.demoOrchestrator) {
-      const { orchestrate } = require('./orchestrator/orchestrator');
+      const { orchestrate } = await import('./orchestrator/orchestrator');
       const message = args.message;
       const ds = args.ds || process.env.FIXED_DATASOURCE_LUID || process.env.DATASOURCE_LUID;
       if (!message || !ds) {
@@ -77,7 +77,7 @@ async function main() {
         process.exit(2);
       }
       logger.info('Demo orchestrator start');
-      const { renderMessage, safeEmit } = require('./utils/events');
+      const { renderMessage, safeEmit } = await import('./utils/events');
       const onEvent = (ev) => {
         const msg = renderMessage(ev);
         if (msg) console.log('-', msg);
@@ -144,5 +144,7 @@ async function main() {
 if (require.main === module) {
   main().catch((e) => { console.error(e?.message || e); process.exit(1); });
 }
+
+export default { main };
 
 module.exports = { main };

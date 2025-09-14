@@ -1,11 +1,11 @@
 // Minimal preflight checks for environment-based prerequisites.
 
-const { preconditionFailed } = require('./errors');
+import { preconditionFailed } from './errors';
 
-function requireEnv(keys) {
+export function requireEnv(keys: string[]): string[] {
   const missing = [];
   for (const k of keys) {
-    const v = process.env[k];
+    const v = process.env[k as keyof NodeJS.ProcessEnv];
     if (v === undefined) {
       missing.push(k);
       continue;
@@ -17,7 +17,7 @@ function requireEnv(keys) {
   return missing;
 }
 
-function assertPreflight(checkFn, errorFactory) {
+export function assertPreflight(checkFn: () => string[], errorFactory?: (missing: string[]) => Error) {
   const missing = checkFn();
   if (missing && missing.length > 0) {
     throw (typeof errorFactory === 'function'
@@ -30,7 +30,7 @@ function assertPreflight(checkFn, errorFactory) {
   return true;
 }
 
-function preflightTableauMCP() {
+export function preflightTableauMCP(): string[] {
   const base = ['TRANSPORT', 'SERVER', 'SITE_NAME', 'PAT_NAME', 'PAT_VALUE'];
   let required = [...base];
   const transport = (process.env.TRANSPORT || '').toLowerCase();
@@ -40,14 +40,8 @@ function preflightTableauMCP() {
   return requireEnv(required);
 }
 
-function preflightCodeInterpreter() {
+export function preflightCodeInterpreter(): string[] {
   return requireEnv(['OPENAI_API_KEY']);
 }
 
-module.exports = {
-  requireEnv,
-  assertPreflight,
-  preflightTableauMCP,
-  preflightCodeInterpreter,
-};
-
+export default { requireEnv, assertPreflight, preflightTableauMCP, preflightCodeInterpreter };

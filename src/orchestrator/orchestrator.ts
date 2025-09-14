@@ -1,9 +1,9 @@
-const { assertPreflight, preflightTableauMCP } = require('../utils/preflight');
-const { safeEmit } = require('../utils/events');
-const { formatForUser, preconditionFailed } = require('../utils/errors');
-const { buildContext } = require('./context');
+import { assertPreflight, preflightTableauMCP } from '../utils/preflight';
+import { safeEmit } from '../utils/events';
+import { formatForUser, preconditionFailed } from '../utils/errors';
+import { buildContext } from './context';
 
-async function orchestrate(params) {
+export async function orchestrate(params: { message: string; datasourceLuid: string; limit?: number; onEvent?: (ev: any) => void; logger?: any }) {
   const { message, datasourceLuid, limit, onEvent, logger } = params || {};
   try {
     if (!message || typeof message !== 'string') {
@@ -60,6 +60,4 @@ async function orchestrate(params) {
     return { reply: msg };
   }
 }
-
-module.exports = { orchestrate };
-
+export default { orchestrate };
