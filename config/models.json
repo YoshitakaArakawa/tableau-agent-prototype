@@ -1,6 +1,9 @@
 {
   "default": "gpt-5-mini",
   "agents": {
-    "narrator": "gpt-5-nano"
+    "triage": "gpt-5-mini"
+    , "field-selector": "gpt-5-mini"
+    , "vizql-builder": "gpt-5-mini"
+    , "analyst": "gpt-5-mini"
   }
 }

@@ -3,3 +3,4 @@ docs/
 AGENTS.md
 node_modules/
 dist/
+logs/

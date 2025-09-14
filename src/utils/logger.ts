@@ -1,21 +1,34 @@
-import { randomUUID } from 'crypto';
+import fs from "fs";
+import path from "path";
 
-function timestamp(): string {
+function ensureDirFor(filePath: string) {
+  try {
+    const dir = path.dirname(path.resolve(filePath));
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {}
+}
+
+function appendLine(filePath: string, line: string) {
+  try {
+    ensureDirFor(filePath);
+    fs.appendFile(filePath, line + "\n", { encoding: "utf8" }, () => {});
+  } catch {}
+}
+
+function ts() {
   return new Date().toISOString();
 }
 
-export function createLogger(traceId?: string) {
-  const id = traceId || randomUUID();
-  const base = (level: string, msg: any, ...args: any[]) => {
-    const prefix = `[${timestamp()}] [${id}] [${level.toUpperCase()}]`;
-    // eslint-disable-next-line no-console
-    console.log(prefix, msg, ...args);
-  };
-  return {
-    traceId: id,
-    info: (msg, ...args) => base('info', msg, ...args),
-    warn: (msg, ...args) => base('warn', msg, ...args),
-    error: (msg, ...args) => base('error', msg, ...args),
-  };
+/**
+ * Append analysis/debug text into a simple txt file.
+ * - Path: env ANALYSIS_LOG_FILE (default: logs/analysis.txt)
+ * - Adds ISO timestamp prefix per line.
+ */
+export function appendAnalysisLog(text: string) {
+  try {
+    const out = process.env.ANALYSIS_LOG_FILE || path.join("logs", "analysis.txt");
+    const line = `${ts()} ${text}`;
+    appendLine(out, line);
+  } catch {}
 }
-export default { createLogger };
+
