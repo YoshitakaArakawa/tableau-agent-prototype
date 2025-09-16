@@ -4,7 +4,8 @@
 import fs from "fs";
 import path from "path";
 import { loadPrompt } from "../agents/promptLoader";
-import { getModelForAgent } from "../model/resolveModels";
+import { getAgentModelConfig } from "../model/resolveModels";
+import type { AnalysisPlan } from "../planning/schemas";
 
 type CIParams = {
   message: string;
@@ -15,7 +16,9 @@ type CIParams = {
 async function uploadFile(filePath: string, apiKey: string, baseUrl: string): Promise<string> {
   const url = `${baseUrl}/v1/files`;
   const ab = await fs.promises.readFile(path.resolve(process.cwd(), filePath));
-  const blob = new Blob([ab]);
+  const arrayBuffer = new ArrayBuffer(ab.length);
+  new Uint8Array(arrayBuffer).set(ab);
+  const blob = new Blob([arrayBuffer]);
   const form = new FormData();
   form.append('file', blob, path.basename(filePath));
   form.append('purpose', 'assistants');
@@ -38,13 +41,10 @@ async function deleteFile(fileId: string, apiKey: string, baseUrl: string): Prom
 
 export async function summarizeWithCI(params: CIParams): Promise<string> {
   const { message, artifactPaths, analysisContext } = params;
-  const enabled = String(process.env.SUMMARIZER_CI_ENABLED || '').toLowerCase() === 'true';
-  if (!enabled) return '';
-
   const apiKey = process.env.OPENAI_API_KEY || '';
   if (!apiKey) return '';
   const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com';
-  const model = getModelForAgent('analyst');
+  const { model } = getAgentModelConfig('analyst');
 
   // Upload files
   const fileIds: string[] = [];
@@ -56,13 +56,30 @@ export async function summarizeWithCI(params: CIParams): Promise<string> {
   let instructions = '';
   try { instructions = loadPrompt('analyst'); } catch { instructions = 'You are a data analyst. Read the provided JSON files and answer succinctly.'; }
 
-  const ctxLines: string[] = [];
+  const plan = resolveAnalysisPlan(analysisContext);
+  const extraContext: Record<string, unknown> = {};
   try {
     const ac = analysisContext as any;
-    if (ac?.goal) ctxLines.push(`Goal: ${ac.goal}`);
-    if (Array.isArray(ac?.metrics) && ac.metrics.length) ctxLines.push(`Metrics: ${ac.metrics.join(', ')}`);
+    if (ac?.notes) extraContext.notes = ac.notes;
+    if (ac?.analysisBrief) extraContext.analysisBrief = ac.analysisBrief;
   } catch {}
-  const input = [ `Question: ${message}`, ...(ctxLines.length ? ['Context:', ...ctxLines] : []) ].join('\n');
+  const inputParts: string[] = [
+    `QUESTION=${message}`,
+    `ARTIFACT_PATHS_JSON=${JSON.stringify(artifactPaths)}`,
+  ];
+  if (plan) {
+    inputParts.push(`ANALYSIS_PLAN_JSON=${JSON.stringify(plan)}`);
+    if (plan.metrics && plan.metrics.length) {
+      extraContext.metrics = plan.metrics;
+    }
+    if (plan.segments && plan.segments.length) {
+      extraContext.segments = plan.segments;
+    }
+  }
+  if (Object.keys(extraContext).length > 0) {
+    inputParts.push(`OPTIONAL_CONTEXT=${JSON.stringify(extraContext)}`);
+  }
+  const input = inputParts.join('\n');
 
   const resp = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -101,3 +118,11 @@ export async function summarizeWithCI(params: CIParams): Promise<string> {
   return typeof outputText === 'string' ? outputText : '';
 }
 
+function resolveAnalysisPlan(analysisContext: any): AnalysisPlan | undefined {
+  if (!analysisContext) return undefined;
+  const direct = (analysisContext as { analysisPlan?: AnalysisPlan }).analysisPlan;
+  if (direct && typeof direct === 'object') return direct;
+  const snake = (analysisContext as { analysis_plan?: AnalysisPlan }).analysis_plan;
+  if (snake && typeof snake === 'object') return snake;
+  return undefined;
+}

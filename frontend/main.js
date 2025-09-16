@@ -115,14 +115,14 @@
 
   function narrateStep(type, detail){
     const map = {
-      'triage:start': 'Thinking through your request...',
-      'triage:done': 'Got it. Moving to the next step.',
+      'triage:start': 'Reviewing your question and intent...',
+      'triage:done': 'Clarification captured.',
       'metadata:start': 'Looking up the dataset’s fields...',
       'metadata:done': 'Metadata is ready.',
-      'plan:start': 'Designing the data query...',
-      'plan:done': 'Query is ready.',
-      'fetch:start': 'Fetching and analyzing the data...',
-      'fetch:done': 'Data fetch and analysis complete.',
+      'plan:start': 'Mapping out the analysis steps...',
+      'plan:done': 'Analysis plan prepared; compiling the query.',
+      'fetch:start': 'Executing the VizQL query...',
+      'fetch:done': 'Data fetch complete.',
       'summarize:start': 'Summarizing the findings...'
     };
     let line = map[type];
@@ -194,15 +194,15 @@
             const id = data?.detail?.conversationId;
             if (id && typeof id === 'string') { conversationId = id; try { localStorage.setItem('chat-conv-id', id); } catch {} }
             break; }
-          case 'triage:start': setChip('triage','active'); { stream.narrStart('triage', 'Thinking through your request...'); } break;
-          case 'triage:done': setChip('triage','done'); { stream.narrAppend('triage', 'Got it. Moving to the next step.'); } break;
+          case 'triage:start': setChip('triage','active'); { stream.narrStart('triage', 'Reviewing your question and intent...'); } break;
+          case 'triage:done': setChip('triage','done'); { stream.narrAppend('triage', 'Clarification captured.'); } break;
           case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset\u2019s fields...'); } break;
           case 'triage:delta': stream.appendDelta(`[triage] ${data?.detail?.text || ''}`); break;
           case 'metadata:delta': stream.appendDelta(`[metadata] ${data?.detail?.text || ''}`); break;
           case 'plan:delta': stream.appendDelta(`[plan] ${data?.detail?.text || ''}`); break;
           case 'fetch:delta': stream.appendDelta(`[fetch] ${data?.detail?.text || ''}`); break;
           case 'metadata:done': setChip('metadata','done'); { stream.narrAppend('metadata', 'Metadata is ready.'); } break;
-          case 'plan:start': setChip('plan','active'); { stream.narrStart('plan', 'Designing the data query...'); } break;
+          case 'plan:start': setChip('plan','active'); { stream.narrStart('plan', 'Mapping out the analysis steps...'); } break;
           case 'plan:error': {
             setChip('plan','error');
             const n = Array.isArray(data?.detail?.issues) ? data.detail.issues.length : 0;
@@ -211,17 +211,17 @@
           case 'plan:done': {
             setChip('plan','done');
             const qs = data?.detail?.query_summary;
-            const extra = qs ? `Query is ready. I will compute ${qs}.` : 'Query is ready.';
+            const extra = qs ? `Analysis plan prepared; compiling the query. I will compute ${qs}.` : 'Analysis plan prepared; compiling the query.';
             stream.narrAppend('plan', extra);
             break; }
-          case 'fetch:start': setChip('fetch','active'); { stream.narrStart('fetch', 'Fetching and analyzing the data...'); } break;
+          case 'fetch:start': setChip('fetch','active'); { stream.narrStart('fetch', 'Executing the VizQL query...'); } break;
           case 'fetch:warning': {
             const msg = data?.detail?.message || '';
             const hint = data?.detail?.hint;
             stream.addWarn(hint ? `${msg} (${hint})` : msg);
             break; }
           case 'fetch:retry': { const rsn = data?.detail?.reason || ''; const hint = data?.detail?.hint; stream.addWarn(hint ? `Fetch retry: ${hint}` : `Fetch retry: ${rsn}`); break; }
-          case 'fetch:done': setChip('fetch','done'); { stream.narrAppend('fetch', 'Data fetch and analysis complete.'); } break;
+          case 'fetch:done': setChip('fetch','done'); { stream.narrAppend('fetch', 'Data fetch complete.'); } break;
           case 'summarize:start': setChip('summarize','active'); { stream.narrStart('summarize', 'Summarizing the findings...'); } break;
           case 'final:delta': { const text = data?.detail?.text || ''; stream.appendDelta(text); break; }
           case 'final': {
@@ -263,3 +263,4 @@
   stopBtn.addEventListener('click', stop);
   msgEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); } });
 })();
+

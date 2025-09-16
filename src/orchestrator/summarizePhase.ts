@@ -11,8 +11,8 @@ export async function summarizePhase(params: {
 {
   const { message, artifactPaths, analysisContext, onEvent } = params;
   safeEmit(onEvent, { type: "summarize:start", detail: { artifacts: artifactPaths } });
+  const started = Date.now();
   const { reply } = await summarize({ message, artifactPaths, analysisContext });
-  safeEmit(onEvent, { type: "final", detail: { reply } });
+  safeEmit(onEvent, { type: "final", detail: { reply, durationMs: Date.now() - started } });
   return { reply };
 }
-

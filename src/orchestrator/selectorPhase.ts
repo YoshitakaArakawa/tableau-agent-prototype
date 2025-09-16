@@ -1,4 +1,4 @@
-import { run, user as userMsg, system as systemMsg, extractAllTextOutput } from "@openai/agents";
+import { run, user as userMsg, system as systemMsg, extractAllTextOutput, type AgentInputItem } from "@openai/agents";
 import { safeEmit } from "../utils/events";
 
 export async function runFieldSelector(params: {
@@ -7,15 +7,18 @@ export async function runFieldSelector(params: {
   normalizedFields: Array<{ fieldCaption: string; dataType?: string; defaultAggregation?: string | null }>;
   maxList: number;
   agent: any;
+  history?: AgentInputItem[];
   onEvent?: (ev: { type: string; detail?: any }) => void;
 }): Promise<{ allowedFields?: Array<{ fieldCaption: string; function?: string }>; suggestedAliases?: Record<string, string> }>
 {
-  const { enabled, message, normalizedFields, maxList, agent, onEvent } = params;
+  const { enabled, message, normalizedFields, maxList, agent, history = [], onEvent } = params;
   if (!enabled) return {};
 
   safeEmit(onEvent as any, { type: 'selector:start', detail: { max: maxList, count: normalizedFields.length } });
+  const started = Date.now();
   const payloadFields = normalizedFields.map(f => ({ fieldCaption: f.fieldCaption, dataType: f.dataType, defaultAggregation: f.defaultAggregation }));
   const msgs = [
+    ...history,
     userMsg(message),
     systemMsg(`MAX_N=${maxList}`),
     systemMsg(`AVAILABLE_FIELDS_JSON=${JSON.stringify(payloadFields)}`),
@@ -28,7 +31,7 @@ export async function runFieldSelector(params: {
       ? (res as any).finalOutput
       : extractAllTextOutput((res as any).output);
   } catch (e: any) {
-    safeEmit(onEvent as any, { type: 'selector:error', detail: { message: e?.message || String(e) } });
+    safeEmit(onEvent as any, { type: 'selector:error', detail: { message: e?.message || String(e), durationMs: Date.now() - started } });
     return {};
   }
 
@@ -36,7 +39,7 @@ export async function runFieldSelector(params: {
   try { obj = JSON.parse(txt); } catch {}
   const list = Array.isArray(obj?.allowedFields) ? obj.allowedFields : [];
   const caps = new Set(normalizedFields.map(f => f.fieldCaption));
-  const allowed = list
+  const allowed: Array<{ fieldCaption: string; function?: string }> = list
     .filter((it: any) => it && typeof it.fieldCaption === 'string' && caps.has(it.fieldCaption))
     .slice(0, Math.max(1, maxList))
     .map((it: any) => ({ fieldCaption: it.fieldCaption, function: typeof it.function === 'string' ? it.function : undefined }));
@@ -47,11 +50,10 @@ export async function runFieldSelector(params: {
     }
   }
   if (allowed.length > 0) {
-    const preview = allowed.map(a => a.fieldCaption).slice(0, 8);
-    safeEmit(onEvent as any, { type: 'selector:done', detail: { selected: allowed.length, fields: preview } });
+    const preview = allowed.map((a) => a.fieldCaption).slice(0, 8);
+    safeEmit(onEvent as any, { type: 'selector:done', detail: { selected: allowed.length, fields: preview, durationMs: Date.now() - started } });
     return { allowedFields: allowed, suggestedAliases };
   }
-  safeEmit(onEvent as any, { type: 'selector:error', detail: { reason: 'no_valid_selection' } });
+  safeEmit(onEvent as any, { type: 'selector:error', detail: { reason: 'no_valid_selection', durationMs: Date.now() - started } });
   return {};
 }
-

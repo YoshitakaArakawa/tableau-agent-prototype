@@ -42,13 +42,55 @@ export const OptionsSpec = z.object({
   disaggregate: z.boolean().default(false),
 });
 
+export const AnalysisStepSpec = z.object({
+  id: z.string().min(1, "analysis_plan.steps[].id is required"),
+  goal: z.string().min(1, "analysis_plan.steps[].goal is required"),
+  hypothesis: z.string().optional(),
+  vizql_refinement: z
+    .object({
+      add_fields: z.array(FieldSpec).optional(),
+      adjust_filters: z.array(TopFilter.or(GenericFilter)).optional(),
+      note: z.string().optional(),
+    })
+    .passthrough()
+    .optional(),
+  ci: z
+    .object({
+      instructions: z.string().min(1, "analysis_plan.steps[].ci.instructions is required"),
+      expected_outputs: z.array(z.string().min(1)).optional(),
+      charts: z.array(z.string().min(1)).optional(),
+    })
+    .passthrough()
+    .optional(),
+  success_criteria: z.string().optional(),
+});
+
+export const AnalysisPlanSpec = z
+  .object({
+    overview: z.string().optional(),
+    metrics: z.array(z.string().min(1)).optional(),
+    segments: z.array(z.string().min(1)).optional(),
+    steps: z.array(AnalysisStepSpec).min(1, "analysis_plan.steps must include at least one step"),
+  })
+  .passthrough();
+
+export const AnalysisPlannerOutput = z
+  .object({
+    analysis_plan: AnalysisPlanSpec,
+    step_query_spec: QuerySpec,
+  })
+  .passthrough();
+
 export const PlannerPayload = z
   .object({
     datasource: z.object({ datasourceLuid: z.string().min(1) }),
     query: QuerySpec,
     options: OptionsSpec.default({ returnFormat: "OBJECTS", debug: false, disaggregate: false }),
+    analysis_plan: AnalysisPlanSpec.optional(),
   })
   .passthrough();
 
 export type PlanningPayload = z.infer<typeof PlannerPayload>;
-
+export type AnalysisPlan = z.infer<typeof AnalysisPlanSpec>;
+export type AnalysisStep = z.infer<typeof AnalysisStepSpec>;
+export type AnalysisPlannerOutputType = z.infer<typeof AnalysisPlannerOutput>;

@@ -2,15 +2,16 @@ import { Agent } from "@openai/agents";
 import { getAgentModelConfig } from "../model/resolveModels";
 import { loadPrompt } from "./promptLoader";
 
-export function buildTriageAgent() {
-  const { model, modelSettings } = getAgentModelConfig("triage");
+export function buildAnalysisPlannerAgent() {
+  const { model, modelSettings } = getAgentModelConfig("analysis-planner");
   const options: any = {
-    name: "triage",
+    name: "analysis-planner",
     model,
-    instructions: loadPrompt("triage"),
+    instructions: loadPrompt("analysis-planner"),
   };
   if (modelSettings && Object.keys(modelSettings).length > 0) {
     options.modelSettings = modelSettings;
   }
   return new Agent(options);
 }
+

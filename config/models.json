@@ -1,9 +1,40 @@
 {
   "default": "gpt-5-mini",
   "agents": {
-    "triage": "gpt-5-mini"
-    , "field-selector": "gpt-5-mini"
-    , "vizql-builder": "gpt-5-mini"
-    , "analyst": "gpt-5-mini"
+    "triage": {
+      "model": "gpt-5-mini",
+      "modelSettings": {
+        "reasoning": { "effort": "minimal" },
+        "verbosity": "low"
+      }
+    },
+    "field-selector": {
+      "model": "gpt-5-mini",
+      "modelSettings": {
+        "reasoning": { "effort": "minimal" },
+        "verbosity": "low"
+      }
+    },
+    "analysis-planner": {
+      "model": "gpt-5",
+      "modelSettings": {
+        "reasoning": { "effort": "low" },
+        "verbosity": "low"
+      }
+    },
+    "vizql-builder": {
+      "model": "gpt-5-mini",
+      "modelSettings": {
+        "reasoning": { "effort": "minimal" },
+        "verbosity": "low"
+      }
+    },
+    "analyst": {
+      "model": "gpt-5",
+      "modelSettings": {
+        "reasoning": { "effort": "low" },
+        "verbosity": "low"
+      }
+    }
   }
 }

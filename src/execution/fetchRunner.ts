@@ -12,6 +12,7 @@ export async function fetchRunner(params: {
   const { datasourceLuid, payloadObj, onEvent } = params;
   const q = payloadObj?.query;
   safeEmit(onEvent as any, { type: "fetch:start" });
+  const started = Date.now();
 
   const preErr = preflightValidateQuery(q);
   if (preErr) {
@@ -55,12 +56,11 @@ export async function fetchRunner(params: {
       const art = saveVdsJson(normalized);
       artifactPath = art.relPath;
     } catch {}
-    safeEmit(onEvent as any, { type: "fetch:done", detail: { summary, artifact: artifactPath || undefined } });
+    safeEmit(onEvent as any, { type: "fetch:done", detail: { summary, artifact: artifactPath || undefined, durationMs: Date.now() - started } });
     return { fetchedSummary: summary, artifactPath };
   } catch (e: any) {
     const error = e?.message || String(e);
-    safeEmit(onEvent as any, { type: "fetch:error", detail: { message: error } });
+    safeEmit(onEvent as any, { type: "fetch:error", detail: { message: error, durationMs: Date.now() - started } });
     return { error };
   }
 }
-
