@@ -7,6 +7,7 @@ export function buildAnalysisPlannerAgent() {
   const options: any = {
     name: "analysis-planner",
     model,
+    maxTurns: 1,
     instructions: loadPrompt("analysis-planner"),
   };
   if (modelSettings && Object.keys(modelSettings).length > 0) {

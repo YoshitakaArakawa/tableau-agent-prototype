@@ -1,65 +1,98 @@
 import fs from "fs";
 import path from "path";
+import { run, user as userMsg, system as systemMsg, extractAllTextOutput } from "@openai/agents";
+import type { AnalysisPlan } from "../planning/schemas";
+import { buildLightweightSummarizerAgent } from "../agents/lightweightSummarizer";
 
-export type AnalysisContext = {
-  intent?: string;
-  goal?: string;
-  hypothesis?: string;
-  metrics?: string[];
-  successCriteria?: string | string[];
-  vizSpec?: any;
-};
+const JSON_CHAR_LIMIT = Number(process.env.LIGHTWEIGHT_JSON_MAX_CHARS || "8000");
 
-function tryReadJson(p: string): any {
+export async function summarizeLightweight(
+  message: string,
+  artifactPaths: string[],
+  ctx?: { analysisPlan?: AnalysisPlan; analysis_plan?: AnalysisPlan }
+): Promise<string>
+{
+  if (!artifactPaths || artifactPaths.length === 0) {
+    return "No artifact available for summarization.";
+  }
+
+  const artifactPath = artifactPaths[0];
+  const resolved = path.resolve(process.cwd(), artifactPath);
+  let raw = '';
   try {
-    const full = path.resolve(process.cwd(), p);
-    const raw = fs.readFileSync(full, 'utf8');
-    return JSON.parse(raw);
-  } catch { return null; }
-}
+    raw = fs.readFileSync(resolved, { encoding: "utf8" });
+  } catch (err: any) {
+    return `Unable to read artifact ${artifactPath}: ${err?.message || err}`;
+  }
 
-function extractSingleNumber(json: any): number | null {
+  const truncated = raw.length > JSON_CHAR_LIMIT;
+  const snippet = truncated ? raw.slice(0, JSON_CHAR_LIMIT) : raw;
+
+  let rowCount: number | undefined;
   try {
-    if (typeof json === 'number') return json;
-    if (Array.isArray(json?.rows) && json.rows.length === 1) {
-      const r = json.rows[0];
-      if (Array.isArray(r)) {
-        for (const cell of r) { const n = Number(cell); if (Number.isFinite(n)) return n; }
-      } else if (r && typeof r === 'object') {
-        for (const v of Object.values(r)) { const n = Number(v as any); if (Number.isFinite(n)) return n; }
-      }
-    }
-    if (Array.isArray(json?.data) && json.data.length === 1) {
-      const r = json.data[0];
-      if (r && typeof r === 'object') { for (const v of Object.values(r)) { const n = Number(v as any); if (Number.isFinite(n)) return n; } }
-    }
+    rowCount = countRowsFromJson(JSON.parse(raw));
   } catch {}
-  return null;
+
+  const plan = resolveAnalysisPlan(ctx);
+  const agent = buildLightweightSummarizerAgent();
+  const messages: any[] = [
+    systemMsg(`QUESTION=${message}`),
+    systemMsg(`ARTIFACT_PATH=${artifactPath}`),
+    systemMsg(`ARTIFACT_JSON_SNIPPET=${snippet}`),
+  ];
+  if (plan) {
+    messages.splice(1, 0, systemMsg(`ANALYSIS_PLAN_JSON=${JSON.stringify(plan)}`));
+  }
+  if (typeof rowCount === "number") {
+    messages.push(systemMsg(`ARTIFACT_ROW_COUNT=${rowCount}`));
+  }
+  if (truncated) {
+    messages.push(systemMsg("ARTIFACT_TRUNCATED=true"));
+  }
+  messages.push(userMsg("Produce the markdown summary following the requested structure."));
+
+  try {
+    const res = await run(agent, messages);
+    const output = (typeof (res as any)?.finalOutput === "string" && (res as any).finalOutput)
+      ? (res as any).finalOutput
+      : extractAllTextOutput((res as any).output);
+    if (typeof output === "string" && output.trim().length > 0) {
+      return output.trim();
+    }
+    return fallbackSummary(rowCount);
+  } catch (err: any) {
+    return fallbackSummary(rowCount, err?.message || String(err || 'unknown_error'));
+  }
 }
 
-export function summarizeLightweight(message: string, artifactPaths: string[], ctx?: AnalysisContext): string {
-  const nums: number[] = [];
-  for (const p of artifactPaths.slice(0, 2)) {
-    const json = tryReadJson(p);
-    const n = extractSingleNumber(json);
-    if (n !== null && Number.isFinite(n)) nums.push(n);
+function fallbackSummary(rowCount?: number, error?: string): string {
+  const lines: string[] = ["## Year-over-Year Overview", "- Unable to generate an automated summary."];
+  lines.push("\n## Key Drivers", "- No driver analysis available.");
+  lines.push("\n## Notes");
+  if (typeof rowCount === "number") {
+    lines.push(`- Rows analysed (approx.): ${rowCount}`);
   }
-  if (nums.length === 1) {
-    const v = nums[0];
-    return `${Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(v)}`;
+  if (error) {
+    lines.push(`- Lightweight summarizer error: ${error}`);
+  } else {
+    lines.push("- Lightweight summarizer returned no content.");
   }
-  if (nums.length >= 2) {
-    const a = nums[0], b = nums[1];
-    const delta = b - a;
-    const pct = a !== 0 ? (delta / a) * 100 : 0;
-    const fmt = (x: number) => Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(x);
-    return `${fmt(b)} vs ${fmt(a)} (Δ ${fmt(delta)}; ${pct.toFixed(2)}%)`;
-  }
-  return 'Unable to produce a lightweight summary from artifacts.';
+  return lines.join("\n");
+}
+
+function resolveAnalysisPlan(ctx: any): AnalysisPlan | undefined {
+  if (!ctx) return undefined;
+  if (ctx.analysisPlan && typeof ctx.analysisPlan === "object") return ctx.analysisPlan;
+  if (ctx.analysis_plan && typeof ctx.analysis_plan === "object") return ctx.analysis_plan;
+  return undefined;
 }
 
 export function countRowsForHeuristic(p: string): number {
   const json = tryReadJson(p);
+  return countRowsFromJson(json);
+}
+
+function countRowsFromJson(json: any): number {
   try {
     if (Array.isArray(json?.rows)) return json.rows.length;
     if (Array.isArray(json?.data)) return json.data.length;
@@ -68,3 +101,12 @@ export function countRowsForHeuristic(p: string): number {
   return 0;
 }
 
+function tryReadJson(p: string): any {
+  try {
+    const full = path.resolve(process.cwd(), p);
+    const raw = fs.readFileSync(full, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}

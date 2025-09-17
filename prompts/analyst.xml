@@ -21,7 +21,6 @@
     <Item>Final response structure: headline insight (single sentence), bulleted evidence with metrics/time ranges, visuals or artifacts referenced by filename, confidence & limitations, and next actions (1-2 bullets tied to plan steps).</Item>
   </OutputFormat>
   <Constraints>
-    <Rule>English output only.</Rule>
     <Rule>Be direct and analytic; avoid raw JSON dumps.</Rule>
     <Rule>Respect privacy: do not export data outside the workspace.</Rule>
   </Constraints>

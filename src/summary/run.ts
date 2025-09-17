@@ -1,71 +1,139 @@
 import { summarizeLightweight, countRowsForHeuristic } from "./lightweight";
 import { summarizeWithCI } from "./codeInterpreter";
 import type { AnalysisPlan } from "../planning/schemas";
+import { safeEmit } from "../utils/events";
 
-export async function summarize(params: {
+function emit(
+  cb: ((ev: { type: string; detail?: any }) => void) | undefined,
+  type: string,
+  detail?: any
+) {
+  safeEmit(cb as any, { type, detail });
+}
+
+type SummarizeParams = {
   message: string;
   artifactPaths: string[];
   analysisContext?: any;
-}): Promise<{ reply: string }>
-{
-  const { message, artifactPaths, analysisContext } = params;
-  const plan = analysisContext?.analysisPlan;
+  onEvent?: (ev: { type: string; detail?: any }) => void;
+};
+
+type SummarizeResult = { reply: string };
+
+type CIOutcome =
+  | { status: "success"; text: string; durationMs: number }
+  | { status: "timeout"; durationMs: number }
+  | { status: "empty"; durationMs: number }
+  | { status: "error"; durationMs: number; error: string };
+
+export async function summarize(params: SummarizeParams): Promise<SummarizeResult> {
+  const { message, artifactPaths, analysisContext, onEvent } = params;
+  const plan: AnalysisPlan | undefined = analysisContext?.analysisPlan;
+
   let shouldCI = false;
-  if (plan && Array.isArray(plan.steps)) {
-    shouldCI = plan.steps.some((step: any) => step && typeof step === 'object' && step.ci);
+  let ciReason: string | undefined;
+  if (plan && Array.isArray(plan.steps) && plan.steps.some((step: any) => step && typeof step === "object" && step.ci)) {
+    shouldCI = true;
+    ciReason = "analysis_plan_step";
   } else {
     const ROWS_THRESHOLD = 30;
     for (const p of artifactPaths) {
       const rows = countRowsForHeuristic(p);
-      if (rows > ROWS_THRESHOLD) { shouldCI = true; break; }
+      if (rows > ROWS_THRESHOLD) {
+        shouldCI = true;
+        ciReason = "row_threshold";
+        break;
+      }
     }
   }
+
+  const ciTimeoutMs = Number(process.env.SUMMARIZE_CI_TIMEOUT_MS || "60000");
+  let fallbackReason = shouldCI ? "ci_unknown" : "ci_not_required";
+
   if (shouldCI) {
-    const text = await summarizeWithCI({ message, artifactPaths, analysisContext });
-    if (text) return { reply: text };
+    emit(onEvent, "summarize:ci:start", {
+      reason: ciReason,
+      artifacts: artifactPaths.length,
+      timeoutMs: ciTimeoutMs,
+    });
+    const outcome = await attemptCI({ message, artifactPaths, analysisContext }, ciTimeoutMs);
+    switch (outcome.status) {
+      case "success":
+        emit(onEvent, "summarize:ci:done", {
+          durationMs: outcome.durationMs,
+          chars: outcome.text.length,
+        });
+        return { reply: outcome.text };
+      case "timeout":
+        fallbackReason = "ci_timeout";
+        emit(onEvent, "summarize:ci:error", {
+          reason: fallbackReason,
+          durationMs: outcome.durationMs,
+        });
+        break;
+      case "empty":
+        fallbackReason = "ci_empty";
+        emit(onEvent, "summarize:ci:error", {
+          reason: fallbackReason,
+          durationMs: outcome.durationMs,
+        });
+        break;
+      case "error":
+        fallbackReason = "ci_error";
+        emit(onEvent, "summarize:ci:error", {
+          reason: fallbackReason,
+          durationMs: outcome.durationMs,
+          message: outcome.error,
+        });
+        break;
+    }
   }
+
+  emit(onEvent, "summarize:lightweight:start", {
+    reason: fallbackReason,
+    artifacts: artifactPaths.length,
+  });
   const raw = summarizeLightweight(message, artifactPaths, analysisContext);
-  const narrative = decorateLightweightReply(raw, plan);
-  return { reply: narrative };
+  emit(onEvent, "summarize:lightweight:done", {
+    reason: fallbackReason,
+    chars: raw?.length ?? 0,
+  });
+  return { reply: raw };
 }
 
-function decorateLightweightReply(raw: string, plan?: AnalysisPlan): string {
-  const trimmed = (raw || '').trim();
-  const overview = plan?.overview?.trim() || plan?.steps?.[0]?.goal?.trim();
-  const actions = extractNextActions(plan);
-  const lines: string[] = [];
-  if (overview) {
-    lines.push(toSentence(`Summary: ${overview}`));
-  }
-  if (trimmed) {
-    if (/unable to/i.test(trimmed)) {
-      lines.push(toSentence(trimmed));
-    } else {
-      lines.push(toSentence(`Key finding: ${trimmed}`));
+async function attemptCI(
+  params: { message: string; artifactPaths: string[]; analysisContext?: any },
+  timeoutMs: number,
+  onEvent?: (ev: { type: string; detail?: any }) => void
+): Promise<CIOutcome> {
+  const started = Date.now();
+  try {
+    const ciPromise = summarizeWithCI({ ...params, onEvent });
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    });
+    const race = await Promise.race([
+      ciPromise.then((text) => ({ timedOut: false, text })),
+      timeoutPromise,
+    ]);
+    const durationMs = Date.now() - started;
+    if ((race as any).timedOut) {
+      return { status: "timeout", durationMs };
     }
-  }
-  if (actions.length) {
-    lines.push(toSentence(`Suggested next steps: ${actions.join('; ')}`));
-  }
-  lines.push('Would you like me to continue with any of these analyses or explore a different angle?');
-  return lines.join(' ');
-}
-
-function extractNextActions(plan?: AnalysisPlan): string[] {
-  if (!plan || !Array.isArray(plan.steps)) return [];
-  const out: string[] = [];
-  for (const step of plan.steps) {
-    if (!step || typeof step !== 'object') continue;
-    if (typeof step.goal === 'string' && step.goal.trim()) {
-      out.push(step.goal.trim());
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    const text = (race as any).text ?? "";
+    if (typeof text === "string" && text.trim().length > 0) {
+      return { status: "success", text, durationMs };
     }
-    if (out.length >= 3) break;
+    return { status: "empty", durationMs };
+  } catch (err: any) {
+    const durationMs = Date.now() - started;
+    return { status: "error", durationMs, error: err?.message || String(err) };
   }
-  return out;
 }
 
-function toSentence(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-}
+
+
+
+
