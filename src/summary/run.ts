@@ -47,7 +47,7 @@ export async function summarize(params: SummarizeParams): Promise<SummarizeResul
     }
   }
 
-  const ciTimeoutMs = Number(process.env.SUMMARIZE_CI_TIMEOUT_MS || "60000");
+  const ciTimeoutMs = 3 * 60 * 1000;
   let fallbackReason = shouldCI ? "ci_unknown" : "ci_not_required";
 
   if (shouldCI) {
@@ -93,7 +93,7 @@ export async function summarize(params: SummarizeParams): Promise<SummarizeResul
     reason: fallbackReason,
     artifacts: artifactPaths.length,
   });
-  const raw = summarizeLightweight(message, artifactPaths, analysisContext);
+  const raw = await summarizeLightweight(message, artifactPaths, analysisContext);
   emit(onEvent, "summarize:lightweight:done", {
     reason: fallbackReason,
     chars: raw?.length ?? 0,
@@ -132,6 +132,8 @@ async function attemptCI(
     return { status: "error", durationMs, error: err?.message || String(err) };
   }
 }
+
+
 
 
 

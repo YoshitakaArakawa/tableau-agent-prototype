@@ -2,18 +2,21 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { URL } from 'url';
+import { randomUUID } from 'crypto';
 import { orchestrate } from './orchestrator/run';
 import { connectTableauMcp, getTableauMcp } from './mcp/tableau';
 import { appendAnalysisLog } from './utils/logger';
 import { clearAnalysisLog } from './utils/logger';
 import { setTracingDisabled } from '@openai/agents';
 import { loadDotEnvFromProjectRoot } from './utils/env';
+import { createInitialSessionState, type SessionState } from './types/session';
 
 // Load .env (no extra deps) and disable Agents SDK tracing
 loadDotEnvFromProjectRoot();
 setTracingDisabled(true);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 8787;
+const sessionStore = new Map<string, SessionState>();
 
 function setCors(res: http.ServerResponse) {
   try {
@@ -45,6 +48,9 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   }
 }
 
+
+
+
 function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   // CORS for file:// or other origins
   setCors(res);
@@ -58,20 +64,43 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   const datasourceLuid = String(u.searchParams.get('datasourceLuid') || '');
   const limit = u.searchParams.get('limit') ? Number(u.searchParams.get('limit')) : undefined;
   try { appendAnalysisLog(`stream:open msgLen=${message.length} ds=${datasourceLuid} limit=${limit ?? ''}`); } catch {}
-  if (!message || !datasourceLuid) { res.write('data: ' + JSON.stringify({ type: 'error', detail: { message: 'message and datasourceLuid are required' } }) + '\n\n'); return res.end(); }
+  if (!message || !datasourceLuid) {
+    res.write('data: ' + JSON.stringify({ type: 'error', detail: { message: 'message and datasourceLuid are required' } }) + '\n\n');
+    return res.end();
+  }
+
+  const requestedConversationId = u.searchParams.get('conversationId') || undefined;
+  let conversationId = requestedConversationId || randomUUID();
+  const existingState = sessionStore.get(conversationId);
+  const isNewSession = !existingState;
+  const state = existingState ?? createInitialSessionState();
+  if (isNewSession) {
+    sessionStore.set(conversationId, state);
+  }
 
   const send = (ev: { type: string; detail?: any }) => {
     try { res.write('data: ' + JSON.stringify(ev) + '\n\n'); } catch {}
   };
 
+  if (isNewSession) {
+    send({ type: 'session:init', detail: { conversationId } });
+  }
+
   const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 15000);
-  orchestrate({ message, datasourceLuid, limitHint: limit, onEvent: (ev) => send(ev) })
-    .then(() => { clearInterval(hb); res.end(); })
-    .catch((e) => { clearInterval(hb); send({ type: 'error', detail: { message: e?.message || String(e) } }); res.end(); });
+  orchestrate({ message, datasourceLuid, limitHint: limit, state, onEvent: (ev) => send(ev) })
+    .then((result) => {
+      sessionStore.set(conversationId, result.nextState);
+      clearInterval(hb);
+      res.end();
+    })
+    .catch((e) => {
+      clearInterval(hb);
+      send({ type: 'error', detail: { message: e?.message || String(e) } });
+      res.end();
+    });
 
   req.on('close', () => { try { clearInterval(hb); } catch {} });
 }
-
 const server = http.createServer(async (req, res) => {
   try {
     const method = (req.method || 'GET').toUpperCase();

@@ -176,21 +176,63 @@ export async function summarizeWithCI(params: CIParams): Promise<string> {
   const del = String(process.env.CI_DELETE_FILE_AFTER ?? "true").toLowerCase() !== "false";
   if (del) for (const id of fileIds) { await deleteFile(id, apiKey, baseUrl); }
 
-  let outputText = json?.output_text || "";
-  if (!outputText && Array.isArray(json?.output)) {
-    const pieces: string[] = [];
-    for (const it of json.output) {
-      if (it?.type === "output_text" && typeof it.text === "string") pieces.push(it.text);
-    }
-    outputText = pieces.join("\n");
-  }
-  if (typeof outputText !== "string") return "";
-  const trimmed = outputText.trim();
+  const trimmed = extractResponseText(json);
+  const sanitized = trimmed.replace(/\[([^\]]+)\]\(sandbox:[^)]+\)/g, '$1').trim();
   safeEmit(onEvent, {
     type: "summarize:ci:response",
-    detail: { chars: trimmed.length },
+    detail: { chars: sanitized.length },
   });
-  return trimmed;
+  return sanitized;
+}
+
+function extractResponseText(json: any): string {
+  const pieces: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        pieces.push(trimmed);
+      }
+    }
+  };
+
+  const visit = (node: any): void => {
+    if (!node) return;
+    if (typeof node === "string") {
+      push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const entry of node) {
+        visit(entry);
+      }
+      return;
+    }
+    push(node?.output_text);
+    if ((node?.type === "output_text" || node?.type === "text") && typeof node?.text === "string") {
+      push(node.text);
+    } else if (typeof node?.text === "string" && !node?.type) {
+      push(node.text);
+    }
+    if (Array.isArray(node?.content)) {
+      for (const child of node.content) {
+        visit(child);
+      }
+    }
+    if (Array.isArray(node?.output)) {
+      for (const child of node.output) {
+        visit(child);
+      }
+    }
+    if (node?.response) {
+      visit(node.response);
+    }
+  };
+
+  visit(json);
+
+  const combined = pieces.join("\n").trim();
+  return combined;
 }
 
 function resolveAnalysisPlan(analysisContext: any): AnalysisPlan | undefined {
@@ -201,3 +243,9 @@ function resolveAnalysisPlan(analysisContext: any): AnalysisPlan | undefined {
   if (snake && typeof snake === "object") return snake;
   return undefined;
 }
+
+
+
+
+
+

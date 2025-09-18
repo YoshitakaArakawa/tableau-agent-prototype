@@ -7,6 +7,7 @@ import {
   type AnalysisPlannerOutputType,
 } from "./schemas";
 import { safeEmit } from "../utils/events";
+import type { ZodIssue } from "zod";
 
 function extractTokenUsage(raw: any): { total?: number; input?: number; output?: number } | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -44,11 +45,42 @@ function toSnippet(value: string | undefined | null, limit = 400): string | unde
   if (!value) return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  const normalized = trimmed.replace(/\s+/g, ' ');
-  return normalized.length > limit ? normalized.slice(0, limit) + '...' : normalized;
+  const normalized = trimmed.replace(/\s+/g, " ");
+  return normalized.length > limit ? normalized.slice(0, limit) + "..." : normalized;
 }
 
 type AgentLike = any;
+
+function buildAnalysisRetryHint(issues: ZodIssue[]): string | undefined {
+  if (!Array.isArray(issues) || issues.length === 0) return undefined;
+  const parts: string[] = [];
+  const touches = (segments: Array<string | number>, key: string) =>
+    segments.some((segment) => String(segment) === key);
+
+  const hasFilterTypeIssue = issues.some((issue) => touches(issue.path, "filters") && touches(issue.path, "filterType"));
+  if (hasFilterTypeIssue) {
+    parts.push(
+      "Ensure step_query_spec.filters use only SET, MATCH, QUANTITATIVE_DATE, QUANTITATIVE_NUMERICAL, DATE, or TOP. Do not output DISCRETE_DATE or other unsupported filterType values."
+    );
+  }
+  if (issues.some((issue) => touches(issue.path, "howMany"))) {
+    parts.push("When emitting TOP filters, populate howMany with a positive integer.");
+  }
+  if (issues.some((issue) => touches(issue.path, "fieldToMeasure"))) {
+    parts.push("Provide fieldToMeasure (fieldCaption + aggregation) for TOP filters.");
+  }
+
+  if (parts.length === 0) {
+    const uniqueMessages = Array.from(new Set(issues.map((issue) => issue.message))).filter(Boolean);
+    if (uniqueMessages.length) {
+      parts.push(uniqueMessages.slice(0, 3).join("; "));
+    }
+  }
+
+  if (parts.length === 0) return undefined;
+  parts.push("Return a JSON object that passes validation with keys analysis_plan and step_query_spec.");
+  return parts.join(" ");
+}
 
 export async function planRunner(params: {
   message: string;
@@ -85,77 +117,104 @@ export async function planRunner(params: {
   });
 
   let analysisUsage: Record<string, number> | undefined;
-  let analysisTxt = '';
+  let analysisTxt = "";
   let analysisPlan: AnalysisPlan | undefined;
   let stepQuerySpec: AnalysisPlannerOutputType["step_query_spec"] | undefined;
 
-  const analysisMsgs = [
+  const baseAnalysisMsgs = [
     ...history,
     userMsg(message),
     systemMsg(`datasourceLuid=${datasourceLuid}`),
     systemMsg(`ALLOWED_FIELDS_JSON=${JSON.stringify(allowedFields || [])}`),
   ] as any[];
   if (triageContext?.brief) {
-    analysisMsgs.push(systemMsg(`TRIAGE_BRIEF_JSON=${JSON.stringify(triageContext.brief)}`));
+    baseAnalysisMsgs.push(systemMsg(`TRIAGE_BRIEF_JSON=${JSON.stringify(triageContext.brief)}`));
   }
   if (triageContext?.briefNatural) {
-    analysisMsgs.push(systemMsg(`TRIAGE_BRIEF_TEXT=${triageContext.briefNatural}`));
+    baseAnalysisMsgs.push(systemMsg(`TRIAGE_BRIEF_TEXT=${triageContext.briefNatural}`));
   }
-  analysisMsgs.push(systemMsg("Output a JSON object with keys analysis_plan and step_query_spec."));
+  baseAnalysisMsgs.push(systemMsg("Output a JSON object with keys analysis_plan and step_query_spec."));
 
   const analysisStarted = Date.now();
-  try {
-    const analysisRes = await run(analysisPlanner, analysisMsgs);
-    analysisUsage = extractTokenUsage((analysisRes as any)?.usage);
-    analysisTxt =
-      typeof (analysisRes as any)?.finalOutput === "string" && (analysisRes as any).finalOutput
-        ? (analysisRes as any).finalOutput
-        : extractAllTextOutput((analysisRes as any).output);
-    let raw: any = undefined;
+  let retryHint: string | undefined;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const analysisMsgs = [...baseAnalysisMsgs];
+    if (attempt > 0 && retryHint) {
+      analysisMsgs.push(systemMsg(retryHint));
+    }
+
+    let analysisRes: any;
     try {
-      raw = JSON.parse(analysisTxt);
-    } catch {}
-    const parsed = AnalysisPlannerOutput.safeParse(raw);
-    if (!parsed.success) {
-      const error = `analysis_plan_validation_failed: ${parsed.error?.issues?.[0]?.message || 'invalid analysis plan output'}`;
-      const snippet = toSnippet(analysisTxt);
-      const detail: Record<string, unknown> = { message: error, durationMs: Date.now() - analysisStarted, issues: parsed.error.issues };
-      if (snippet) detail.outputSnippet = snippet;
+      analysisRes = await run(analysisPlanner, analysisMsgs);
+    } catch (e: any) {
+      const error = e?.message || String(e);
+      const detail = { message: error, durationMs: Date.now() - analysisStarted };
       safeEmit(onEvent as any, { type: "plan:analysis:error", detail });
       safeEmit(onEvent as any, { type: "plan:error", detail });
       return { error };
     }
-    analysisPlan = parsed.data.analysis_plan;
-    stepQuerySpec = parsed.data.step_query_spec;
-  } catch (e: any) {
-    const error = e?.message || String(e);
+
+    const attemptUsage = extractTokenUsage((analysisRes as any)?.usage);
+    const attemptTxt =
+      typeof (analysisRes as any)?.finalOutput === "string" && (analysisRes as any).finalOutput
+        ? (analysisRes as any).finalOutput
+        : extractAllTextOutput((analysisRes as any).output);
+
+    let raw: any = undefined;
+    try {
+      raw = JSON.parse(attemptTxt);
+    } catch {}
+    const parsed = AnalysisPlannerOutput.safeParse(raw);
+    if (parsed.success) {
+      analysisUsage = attemptUsage;
+      analysisTxt = attemptTxt;
+      analysisPlan = parsed.data.analysis_plan;
+      stepQuerySpec = parsed.data.step_query_spec;
+      break;
+    }
+
+    const error = `analysis_plan_validation_failed: ${parsed.error?.issues?.[0]?.message || "invalid analysis plan output"}`;
+    const snippet = toSnippet(attemptTxt);
+    const detail: Record<string, unknown> = {
+      message: error,
+      durationMs: Date.now() - analysisStarted,
+      issues: parsed.error.issues,
+    };
+    if (snippet) detail.outputSnippet = snippet;
+
+    const hint = buildAnalysisRetryHint(parsed.error.issues);
+    if (attempt === 0 && hint) {
+      retryHint = hint;
+      detail.retryHint = hint;
+      safeEmit(onEvent as any, { type: "plan:analysis:retry", detail });
+      continue;
+    }
+
+    safeEmit(onEvent as any, { type: "plan:analysis:error", detail });
+    safeEmit(onEvent as any, { type: "plan:error", detail });
+    return { error };
+  }
+
+  if (!analysisPlan || !stepQuerySpec) {
+    const error = "analysis_plan_validation_failed: unable to recover from validation errors";
     const detail = { message: error, durationMs: Date.now() - analysisStarted };
     safeEmit(onEvent as any, { type: "plan:analysis:error", detail });
     safeEmit(onEvent as any, { type: "plan:error", detail });
     return { error };
   }
+
   const analysisDuration = Date.now() - analysisStarted;
-
-  if (!stepQuerySpec) {
-    const error = 'analysis_plan_missing_query_spec';
-    const detail = { message: error, durationMs: analysisDuration };
-    safeEmit(onEvent as any, { type: "plan:analysis:error", detail });
-    safeEmit(onEvent as any, { type: "plan:error", detail });
-    return { error };
-  }
-
-  const analysisDetail: Record<string, unknown> = { durationMs: analysisDuration };
-  if (analysisUsage) analysisDetail.usage = analysisUsage;
-  if (analysisPlan) {
-    if (Array.isArray(analysisPlan.steps)) analysisDetail.steps = analysisPlan.steps.length;
-    if (typeof analysisPlan.overview === "string" && analysisPlan.overview.trim()) {
-      analysisDetail.overview = analysisPlan.overview;
-    }
-  }
-  analysisDetail.step_query_spec = {
-    fields: Array.isArray(stepQuerySpec.fields) ? stepQuerySpec.fields.length : 0,
-    filters: Array.isArray(stepQuerySpec.filters) ? stepQuerySpec.filters.length : 0,
+  const analysisDetail: Record<string, unknown> = {
+    durationMs: analysisDuration,
+    steps: Array.isArray(analysisPlan.steps) ? analysisPlan.steps.length : undefined,
+    overview: analysisPlan.overview,
+    step_query_spec: {
+      fields: Array.isArray(stepQuerySpec?.fields) ? stepQuerySpec.fields.length : 0,
+      filters: Array.isArray(stepQuerySpec?.filters) ? stepQuerySpec.filters.length : 0,
+    },
   };
+  if (analysisUsage) analysisDetail.usage = analysisUsage;
   safeEmit(onEvent as any, { type: "plan:analysis:done", detail: analysisDetail });
 
   // --- Step 2: compile executable query ---
@@ -179,7 +238,7 @@ export async function planRunner(params: {
   ] as any[];
 
   let compileUsage: Record<string, number> | undefined;
-  let compileTxt = '';
+  let compileTxt = "";
   const compileStarted = Date.now();
   try {
     const res = await run(queryCompiler, compileMsgs);
@@ -209,7 +268,7 @@ export async function planRunner(params: {
 
   const parsed = PlannerPayload.safeParse(base);
   if (!parsed.success) {
-    const error = `validation_failed: ${parsed.error?.issues?.[0]?.message || 'invalid payload'}`;
+    const error = `validation_failed: ${parsed.error?.issues?.[0]?.message || "invalid payload"}`;
     const snippet = toSnippet(compileTxt);
     const detail: Record<string, unknown> = { message: error, durationMs: compileDuration, issues: parsed.error.issues };
     if (snippet) detail.outputSnippet = snippet;
@@ -235,7 +294,7 @@ export async function planRunner(params: {
     options: payloadObj?.options,
   };
   // Build a compact natural-language query summary for UI narration
-  let querySummary = '';
+  let querySummary = "";
   try {
     const q: any = payloadObj?.query || {};
     const fields = Array.isArray(q.fields) ? q.fields : [];
@@ -244,10 +303,10 @@ export async function planRunner(params: {
     if (first?.function && first?.fieldCaption) fieldParts.push(`${first.function}(${first.fieldCaption})`);
     else if (first?.fieldCaption) fieldParts.push(first.fieldCaption);
     // Date/period hint from filters
-    let period = '';
+    let period = "";
     const filters = Array.isArray(q.filters) ? q.filters : [];
     for (const f of filters) {
-      const t = String(f?.filterType || '').toUpperCase();
+      const t = String(f?.filterType || "").toUpperCase();
       if (t === "QUANTITATIVE_DATE") {
         const min = (f as any)?.minDate;
         const max = (f as any)?.maxDate;
@@ -264,7 +323,7 @@ export async function planRunner(params: {
         }
       }
     }
-    if (fieldParts.length) querySummary = `${fieldParts.join(', ')}${period}`;
+    if (fieldParts.length) querySummary = `${fieldParts.join(", ")}${period}`;
   } catch {}
 
   const detail: any = { summary, query_summary: querySummary };
