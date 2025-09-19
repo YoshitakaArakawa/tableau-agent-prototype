@@ -20,7 +20,7 @@
       }
     },
     "analysis-planner": {
-      "model": "gpt-5",
+      "model": "gpt-5-mini",
       "modelSettings": {
         "reasoning": {
           "effort": "low"

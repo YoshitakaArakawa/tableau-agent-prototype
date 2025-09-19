@@ -62,8 +62,7 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   const u = new URL(req.url || '/', `http://localhost:${port}`);
   const message = String(u.searchParams.get('message') || '');
   const datasourceLuid = String(u.searchParams.get('datasourceLuid') || '');
-  const limit = u.searchParams.get('limit') ? Number(u.searchParams.get('limit')) : undefined;
-  try { appendAnalysisLog(`stream:open msgLen=${message.length} ds=${datasourceLuid} limit=${limit ?? ''}`); } catch {}
+  try { appendAnalysisLog(`stream:open msgLen=${message.length} ds=${datasourceLuid}`); } catch {}
   if (!message || !datasourceLuid) {
     res.write('data: ' + JSON.stringify({ type: 'error', detail: { message: 'message and datasourceLuid are required' } }) + '\n\n');
     return res.end();
@@ -87,7 +86,7 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   }
 
   const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 15000);
-  orchestrate({ message, datasourceLuid, limitHint: limit, state, onEvent: (ev) => send(ev) })
+  orchestrate({ message, datasourceLuid, state, onEvent: (ev) => send(ev) })
     .then((result) => {
       sessionStore.set(conversationId, result.nextState);
       clearInterval(hb);
@@ -169,3 +168,7 @@ async function shutdown(signal: string) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+
+
+

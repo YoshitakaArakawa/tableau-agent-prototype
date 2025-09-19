@@ -1,11 +1,10 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const chatEl = $("chat");
-  const msgEl = $("message");
-  const sendBtn = $("sendBtn");
-  const stopBtn = $("stopBtn");
-  const luidEl = $("datasourceLuid");
-  const limitEl = $("limit");
+  const chatEl = $('chat');
+  const msgEl = $('message');
+  const sendBtn = $('sendBtn');
+  const stopBtn = $('stopBtn');
+  const luidEl = $('datasourceLuid');
   const urlBase = new URLSearchParams(location.search).get('base') || 'http://localhost:8787';
 
   let es = null;
@@ -17,12 +16,11 @@
   try {
     const saved = JSON.parse(localStorage.getItem('chat-advanced') || '{}');
     if (saved.luid) luidEl.value = saved.luid;
-    if (saved.limit) limitEl.value = String(saved.limit);
   } catch {}
 
   function persist() {
     try {
-      localStorage.setItem('chat-advanced', JSON.stringify({ luid: luidEl.value.trim(), limit: Number(limitEl.value) || 50 }));
+      localStorage.setItem('chat-advanced', JSON.stringify({ luid: luidEl.value.trim() }));
     } catch {}
   }
 
@@ -44,6 +42,18 @@
     return t.replace(/\n\n/g,'<br/><br/>').replace(/\n/g,'<br/>');
   }
 
+  function formatDuration(ms){
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '--';
+    const seconds = ms / 1000;
+    if (seconds >= 100) return `${Math.round(seconds)} s`;
+    if (seconds >= 10) return `${seconds.toFixed(1)} s`;
+    return `${seconds.toFixed(2)} s`;
+  }
+  function toDurationMs(value){
+    const num = Number(value);
+    return Number.isFinite(num) && num >= 0 ? num : null;
+  }
+
   function bubble(role, html){
     const div = document.createElement('div');
     div.className = `bubble ${role}`;
@@ -63,6 +73,20 @@
     sum.textContent = 'Streaming... (expand/collapse)';
     const events = document.createElement('div');
     events.className = 'stream-events';
+    const times = document.createElement('div');
+    times.className = 'stream-times';
+    times.hidden = true;
+    const timesTitle = document.createElement('div');
+    timesTitle.className = 'stream-times-title';
+    timesTitle.textContent = 'Durations';
+    const totalLine = document.createElement('div');
+    totalLine.className = 'stream-time total';
+    totalLine.textContent = 'Total: --';
+    const timeList = document.createElement('div');
+    timeList.className = 'stream-time-list';
+    times.appendChild(timesTitle);
+    times.appendChild(totalLine);
+    times.appendChild(timeList);
     // Natural-language narration (smaller text)
     const narr = document.createElement('div');
     narr.className = 'stream-narr';
@@ -71,12 +95,31 @@
     delta.className = 'stream-delta';
     panel.appendChild(sum);
     panel.appendChild(events);
+    panel.appendChild(times);
     panel.appendChild(narr);
     panel.appendChild(delta);
     wrap.appendChild(panel);
     chatEl.appendChild(wrap);
     chatEl.scrollTop = chatEl.scrollHeight;
     const narrLines = Object.create(null);
+    let totalMs = null;
+    const durations = [];
+    const renderTimes = () => {
+      if (!durations.length && totalMs === null) {
+        times.hidden = true;
+        return;
+      }
+      times.hidden = false;
+      totalLine.textContent = totalMs === null ? 'Total: --' : `Total: ${formatDuration(totalMs)}`;
+      timeList.textContent = '';
+      for (const entry of durations) {
+        const row = document.createElement('div');
+        row.className = 'stream-time';
+        row.textContent = `${entry.label}: ${formatDuration(entry.ms)}`;
+        timeList.appendChild(row);
+      }
+    };
+    renderTimes();
     return {
       addNote: (text) => { const p = document.createElement('div'); p.className = 'note'; p.textContent = text; events.appendChild(p); },
       appendDelta: (text) => { delta.textContent += text; delta.scrollTop = delta.scrollHeight; },
@@ -109,7 +152,28 @@
           }
         } catch {}
       },
-      finalize: () => { sum.textContent = 'Streaming complete'; panel.open = false; },
+      updateDuration: (key, label, ms) => {
+        const dur = toDurationMs(ms);
+        if (dur === null) return;
+        let existing = null;
+        for (const entry of durations) {
+          if (entry.key === key) { existing = entry; break; }
+        }
+        if (existing) {
+          existing.ms = dur;
+          existing.label = label;
+        } else {
+          durations.push({ key, label, ms: dur });
+        }
+        renderTimes();
+      },
+      setTotal: (ms) => {
+        const dur = toDurationMs(ms);
+        if (dur === null) return;
+        totalMs = dur;
+        renderTimes();
+      },
+      finalize: () => { sum.textContent = 'Streaming complete'; panel.open = false; renderTimes(); },
     };
   }
 
@@ -133,7 +197,7 @@
         if (qs) line = `${line} I will compute ${qs}.`;
       }
     } catch {}
-    if (line) return line + "\n";
+    if (line) return line + '\n';
     return '';
   }
 
@@ -141,7 +205,6 @@
     if (es) es.close();
     const message = msgEl.value.trim();
     const luid = luidEl.value.trim();
-    const limit = Number(limitEl.value) || 50;
     if (!message) return;
     persist();
 
@@ -156,7 +219,6 @@
     const url = new URL(`${base}/chat/orchestrator/stream`);
     url.searchParams.set('message', message);
     if (luid) url.searchParams.set('datasourceLuid', luid);
-    if (limit) url.searchParams.set('limit', String(limit));
     if (conversationId) url.searchParams.set('conversationId', conversationId);
 
     clientLog.add(`connect ${url.toString()}`);
@@ -165,6 +227,7 @@
     stopBtn.disabled = false;
 
     const stream = createStreamPanel();
+    const runStartedAt = Date.now();
 
     let firstMessage = true;
     es.onmessage = (ev) => {
@@ -195,24 +258,72 @@
             if (id && typeof id === 'string') { conversationId = id; try { localStorage.setItem('chat-conv-id', id); } catch {} }
             break; }
           case 'triage:start': setChip('triage','active'); { stream.narrStart('triage', 'Reviewing your question and intent...'); } break;
-          case 'triage:done': setChip('triage','done'); { stream.narrAppend('triage', 'Clarification captured.'); } break;
-          case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset\u2019s fields...'); } break;
+          case 'triage:done': {
+            setChip('triage','done');
+            stream.narrAppend('triage', 'Clarification captured.');
+            const ms = toDurationMs(data?.detail?.durationMs);
+            if (ms !== null) stream.updateDuration('triage', 'Triage', ms);
+            break;
+          }
+          case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset’s fields...'); } break;
           case 'triage:delta': stream.appendDelta(`[triage] ${data?.detail?.text || ''}`); break;
           case 'metadata:delta': stream.appendDelta(`[metadata] ${data?.detail?.text || ''}`); break;
           case 'plan:delta': stream.appendDelta(`[plan] ${data?.detail?.text || ''}`); break;
           case 'fetch:delta': stream.appendDelta(`[fetch] ${data?.detail?.text || ''}`); break;
-          case 'metadata:done': setChip('metadata','done'); { stream.narrAppend('metadata', 'Metadata is ready.'); } break;
+          case 'metadata:done': {
+            setChip('metadata','done');
+            stream.narrAppend('metadata', 'Metadata is ready.');
+            const ms = toDurationMs(data?.detail?.durationMs);
+            if (ms !== null) stream.updateDuration('metadata', 'Metadata', ms);
+            break;
+          }
+          case 'selector:done': {
+            const detail = data?.detail || {};
+            if (Array.isArray(detail.fields) && detail.fields.length) {
+              stream.addNote(`Fields selected: ${detail.fields.join(', ')}`);
+            }
+            const ms = toDurationMs(detail.durationMs);
+            if (ms !== null) stream.updateDuration('selector', 'Field selection', ms);
+            break;
+          }
+          case 'selector:error': {
+            const detail = data?.detail || {};
+            const msg = detail.message || detail.reason || 'Field selection failed.';
+            stream.addWarn(msg);
+            const ms = toDurationMs(detail.durationMs);
+            if (ms !== null) stream.updateDuration('selector', 'Field selection', ms);
+            break;
+          }
           case 'plan:start': setChip('plan','active'); { stream.narrStart('plan', 'Mapping out the analysis steps...'); } break;
+          case 'plan:analysis:done': {
+            const detail = data?.detail || {};
+            const ms = toDurationMs(detail.durationMs);
+            if (ms !== null) stream.updateDuration('plan-analysis', 'Planning (analysis)', ms);
+            break;
+          }
+          case 'plan:compile:done': {
+            const detail = data?.detail || {};
+            const ms = toDurationMs(detail.durationMs);
+            if (ms !== null) stream.updateDuration('plan-compile', 'Planning (compile)', ms);
+            break;
+          }
           case 'plan:error': {
             setChip('plan','error');
             const n = Array.isArray(data?.detail?.issues) ? data.detail.issues.length : 0;
             stream.addWarn(`Plan validation failed (${n} issues). Using safe fallback.`);
+            const ms = toDurationMs(data?.detail?.durationMs);
+            if (ms !== null) stream.updateDuration('plan', 'Planning', ms);
             break; }
           case 'plan:done': {
             setChip('plan','done');
-            const qs = data?.detail?.query_summary;
-            const extra = qs ? `Analysis plan prepared; compiling the query. I will compute ${qs}.` : 'Analysis plan prepared; compiling the query.';
+            const detail = data?.detail || {};
+            const qs = detail.query_summary;
+            const extra = qs ? 'Analysis plan prepared; compiling the query. I will compute ' + qs + '.' : 'Analysis plan prepared; compiling the query.';
             stream.narrAppend('plan', extra);
+            const analysisMs = toDurationMs(detail.analysis_duration_ms);
+            if (analysisMs !== null) stream.updateDuration('plan-analysis', 'Planning (analysis)', analysisMs);
+            const compileMs = toDurationMs(detail.compile_duration_ms);
+            if (compileMs !== null) stream.updateDuration('plan-compile', 'Planning (compile)', compileMs);
             break; }
           case 'fetch:start': setChip('fetch','active'); { stream.narrStart('fetch', 'Executing the VizQL query...'); } break;
           case 'fetch:warning': {
@@ -220,17 +331,41 @@
             const hint = data?.detail?.hint;
             stream.addWarn(hint ? `${msg} (${hint})` : msg);
             break; }
-          case 'fetch:retry': { const rsn = data?.detail?.reason || ''; const hint = data?.detail?.hint; stream.addWarn(hint ? `Fetch retry: ${hint}` : `Fetch retry: ${rsn}`); break; }
-          case 'fetch:done': setChip('fetch','done'); { stream.narrAppend('fetch', 'Data fetch complete.'); } break;
+          case 'fetch:retry': {
+            const detail = data?.detail || {};
+            const attempt = detail.attempt;
+            const source = detail.source;
+            const msg = detail.message || detail.reason || '';
+            const contextParts = [];
+            if (typeof attempt === 'number') contextParts.push(`attempt ${attempt}`);
+            if (typeof source === 'string' && source) contextParts.push(source);
+            const prefix = contextParts.length ? `Fetch retry (${contextParts.join(' / ')})` : 'Fetch retry';
+            stream.addWarn(msg ? `${prefix}: ${msg}` : prefix);
+            break; }
+          case 'fetch:done': {
+            setChip('fetch','done');
+            stream.narrAppend('fetch', 'Data fetch complete.');
+            const ms = toDurationMs(data?.detail?.durationMs);
+            if (ms !== null) stream.updateDuration('fetch', 'Fetch', ms);
+            break;
+          }
           case 'summarize:start': setChip('summarize','active'); { stream.narrStart('summarize', 'Summarizing the findings...'); } break;
           case 'final:delta': { const text = data?.detail?.text || ''; stream.appendDelta(text); break; }
           case 'final': {
             setChip('summarize','done'); setChip('final','done');
-            let text = data?.detail?.reply;
+            const detail = data?.detail || {};
+            let text = detail.reply;
             if (typeof text !== 'string') {
-              try { text = JSON.stringify(text ?? data?.detail ?? {}, null, 2); } catch { text = String(text ?? '') }
+              try { text = JSON.stringify(text ?? detail ?? {}, null, 2); } catch { text = String(text ?? ''); }
             }
+            const summarizeMs = toDurationMs(detail.durationMs);
+            if (summarizeMs !== null) stream.updateDuration('summarize', 'Summarize', summarizeMs);
+            stream.setTotal(Date.now() - runStartedAt);
+            es?.close();
+            es = null;
             stream.finalize();
+            es?.close();
+            es = null;
             bubble('assistant', renderMarkdown(text));
             clientLog.add('stream closed (ok)');
             break; }
@@ -243,6 +378,7 @@
       sendBtn.disabled = false;
       stopBtn.disabled = true;
       try { bubble('system', 'Connection failed. Check server URL (base) and network.'); } catch {}
+      stream.setTotal(Date.now() - runStartedAt);
       clientLog.add('stream closed (error)');
       es?.close();
       es = null;
@@ -263,4 +399,11 @@
   stopBtn.addEventListener('click', stop);
   msgEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); } });
 })();
+
+
+
+
+
+
+
 

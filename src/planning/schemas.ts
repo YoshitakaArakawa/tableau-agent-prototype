@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Aggregation function for fields (normalized to UPPER; COUNTD → COUNT_DISTINCT)
+// Aggregation function for fields (normalized to UPPER; COUNTD -> COUNT_DISTINCT)
 export const AggFunc = z
   .string()
   .transform((v) => (typeof v === "string" ? v.trim().toUpperCase() : v))
@@ -71,13 +71,13 @@ export const AnalysisPlanSpec = z
     metrics: z.array(z.string().min(1)).optional(),
     segments: z.array(z.string().min(1)).optional(),
     steps: z.array(AnalysisStepSpec).min(1, "analysis_plan.steps must include at least one step"),
+    assumptions: z.array(z.string().min(1)).optional(),
   })
   .passthrough();
 
 export const AnalysisPlannerOutput = z
   .object({
     analysis_plan: AnalysisPlanSpec,
-    step_query_spec: QuerySpec,
   })
   .passthrough();
 
