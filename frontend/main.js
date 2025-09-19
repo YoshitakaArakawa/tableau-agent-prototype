@@ -317,9 +317,12 @@
           case 'plan:done': {
             setChip('plan','done');
             const detail = data?.detail || {};
-            const qs = detail.query_summary;
-            const extra = qs ? 'Analysis plan prepared; compiling the query. I will compute ' + qs + '.' : 'Analysis plan prepared; compiling the query.';
-            stream.narrAppend('plan', extra);
+            const qs = typeof detail.query_summary === 'string' ? detail.query_summary.trim() : '';
+            const planOverview = typeof detail.analysis_plan?.overview === 'string' ? detail.analysis_plan.overview.trim() : '';
+            const pieces = ['Analysis plan prepared'];
+            if (qs) pieces.push(`I will compute ${qs}.`);
+            if (planOverview && !qs.includes(planOverview)) pieces.push(planOverview);
+            stream.narrAppend('plan', pieces.join(' '));
             const analysisMs = toDurationMs(detail.analysis_duration_ms);
             if (analysisMs !== null) stream.updateDuration('plan-analysis', 'Planning (analysis)', analysisMs);
             const compileMs = toDurationMs(detail.compile_duration_ms);

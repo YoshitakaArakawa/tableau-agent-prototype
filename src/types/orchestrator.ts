@@ -1,3 +1,5 @@
+import type { AnalysisPlan } from "../planning/schemas";
+
 export type OrchestratorEvent = { type: string; detail?: any };
 
 export type TriageDecision = {
@@ -17,4 +19,5 @@ export type TriageContext = {
   briefNatural?: string;
   requiredFields?: string[];
   filterHints?: FilterHint[];
+  analysisPlan?: AnalysisPlan;
 };

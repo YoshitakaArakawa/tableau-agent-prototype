@@ -2,6 +2,7 @@ import { run, user as userMsg, extractAllTextOutput, system as systemMsg, type A
 import type { OrchestratorEvent, TriageDecision, TriageContext, FilterHint } from "../types/orchestrator";
 import type { NormalizedField } from "../utils/metadataCache";
 import { safeEmit } from "../utils/events";
+import { AnalysisPlanSpec, type AnalysisPlan } from "../planning/schemas";
 
 function sanitizeRequiredFields(raw: unknown, normalized: NormalizedField[]): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -89,12 +90,18 @@ export async function triagePhase(params: {
 
   const requiredFields = sanitizeRequiredFields(triageObj?.requiredFields, normalizedFields);
   const filterHints = sanitizeFilterHints(triageObj?.filterHints, normalizedFields);
+  let analysisPlan: AnalysisPlan | undefined;
+  try {
+    const parsedPlan = AnalysisPlanSpec.safeParse(triageObj?.analysis_plan);
+    if (parsedPlan.success) analysisPlan = parsedPlan.data;
+  } catch {}
 
   const context: TriageContext = {
     brief: triageObj?.brief,
     briefNatural: typeof triageObj?.briefNatural === "string" ? triageObj.briefNatural : undefined,
     requiredFields,
     filterHints,
+    analysisPlan,
   };
 
   safeEmit(onEvent, {

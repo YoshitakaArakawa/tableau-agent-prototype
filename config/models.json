@@ -11,7 +11,7 @@
       }
     },
     "field-selector": {
-      "model": "gpt-5-mini",
+      "model": "gpt-5-nano",
       "modelSettings": {
         "reasoning": {
           "effort": "minimal"
@@ -19,17 +19,8 @@
         "verbosity": "low"
       }
     },
-    "analysis-planner": {
-      "model": "gpt-5-mini",
-      "modelSettings": {
-        "reasoning": {
-          "effort": "low"
-        },
-        "verbosity": "low"
-      }
-    },
     "vizql-builder": {
-      "model": "gpt-5-mini",
+      "model": "gpt-5-nano",
       "modelSettings": {
         "reasoning": {
           "effort": "minimal"
@@ -38,7 +29,7 @@
       }
     },
     "analyst": {
-      "model": "gpt-5",
+      "model": "gpt-5-mini",
       "modelSettings": {
         "reasoning": {
           "effort": "low"

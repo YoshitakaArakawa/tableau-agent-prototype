@@ -4,13 +4,11 @@ import { safeEmit } from "../utils/events";
 
 import { buildTriageAgent } from "../agents/triage";
 import { buildFieldSelectorAgent } from "../agents/selector";
-import { buildAnalysisPlannerAgent } from "../agents/analysisPlanner";
 
 import { metadataPhase } from "./metadataPhase";
 import { triagePhase } from "./triagePhase";
 import { runFieldSelector } from "./selectorPhase";
 
-import { planRunner } from "../planning/planRunner";
 import { fetchRunner } from "../execution/fetchRunner";
 import { summarizePhase } from "./summarizePhase";
 import type { SessionState } from "../types/session";
@@ -27,7 +25,6 @@ export async function orchestrate(params: {
 
   const triage = buildTriageAgent();
   const selector = buildFieldSelectorAgent();
-  const analysisPlannerAgent = buildAnalysisPlannerAgent();
 
   const baseState = state
     ? {
@@ -100,7 +97,7 @@ export async function orchestrate(params: {
     normalizedFields,
     requiredFields: tri.context?.requiredFields,
     filterHints: tri.context?.filterHints,
-    maxList: 3,
+    maxList: 10,
     agent: selector,
     history: historyBefore,
     onEvent,
@@ -133,33 +130,29 @@ export async function orchestrate(params: {
     return { reply, artifactPaths: [], nextState };
   }
 
-  const plan = await planRunner({
-    message,
-    datasourceLuid,
-    allowedFields,
-    analysisPlanner: analysisPlannerAgent,
-    history: historyBefore,
-    triageContext: workingState.triageContext,
-    onEvent,
-  });
+  const analysisPlan = workingState.triageContext?.analysisPlan;
+  workingState = {
+    ...workingState,
+    analysisPlan: analysisPlan ?? workingState.analysisPlan,
+  };
 
-  if (!plan.analysisPlan) {
-    const reply = plan.error || "Failed to generate a valid plan.";
-    safeEmit(onEvent, { type: "final", detail: { reply } });
-    const assistantTurn = assistantMsg(reply);
-    const nextState: SessionState = {
-      ...workingState,
-      history: [...workingState.history, assistantTurn],
-    };
-    return { reply, artifactPaths: [], nextState };
+  if (analysisPlan) {
+    safeEmit(onEvent as any, {
+      type: "plan:done",
+      detail: {
+        analysis_plan: {
+          steps: Array.isArray(analysisPlan.steps) ? analysisPlan.steps.length : 0,
+          overview: analysisPlan.overview,
+        },
+        durationMs: 0,
+      },
+    });
   }
-
-  workingState = { ...workingState, analysisPlan: plan.analysisPlan };
 
   const fetched = await fetchRunner({
     datasourceLuid,
     message,
-    analysisPlan: plan.analysisPlan,
+    analysisPlan: analysisPlan ?? workingState.analysisPlan,
     allowedFields,
     triageContext: workingState.triageContext,
     fieldAliases: allowedFieldsResult.suggestedAliases,
@@ -207,3 +200,4 @@ export async function orchestrate(params: {
   };
   return { reply, artifactPaths, nextState };
 }
+

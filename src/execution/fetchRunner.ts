@@ -3,86 +3,95 @@ import { safeEmit } from "../utils/events";
 import { preflightValidateQuery } from "../utils/preflight";
 import { tableauClient } from "../data/tableauClient";
 import { saveVdsJson } from "../utils/artifacts";
-import { buildPlannerAgent } from "../agents/planner";
-import { PlannerPayload, AnalysisPlan } from "../planning/schemas";
+import { buildQueryCompilerAgent } from "../agents/queryCompiler";
+import { PlannerPayload, type AnalysisPlan } from "../planning/schemas";
 
-export type FetchFeedback = {
-  attempt: number;
-  source: "builder" | "preflight" | "tableau";
-  message: string;
-  raw?: any;
+type FilterHint = {
+  fieldCaption: string;
+  operator?: string;
+  values?: any[];
+  note?: string;
 };
+
+type FetchRetrySource = "builder" | "preflight" | "tableau";
+
+interface QueryField {
+  fieldCaption: string;
+  function?: string;
+}
 
 const MAX_ATTEMPTS = 3;
 
 export async function fetchRunner(params: {
   datasourceLuid: string;
   message: string;
-  analysisPlan: AnalysisPlan;
-  allowedFields: Array<{ fieldCaption: string; function?: string }>;
-  triageContext?: { requiredFields?: string[]; filterHints?: any[] } | null;
+  analysisPlan?: AnalysisPlan;
+  allowedFields: Array<QueryField>;
+  triageContext?: { requiredFields?: string[]; filterHints?: FilterHint[] } | null;
   fieldAliases?: Record<string, string>;
   onEvent?: (ev: { type: string; detail?: any }) => void;
-}): Promise<{ fetchedSummary?: string; artifactPath?: string; error?: string; feedback?: FetchFeedback[] }>
+}): Promise<{ fetchedSummary?: string; artifactPath?: string; error?: string }>
 {
   const { datasourceLuid, message, analysisPlan, allowedFields, triageContext, fieldAliases, onEvent } = params;
   safeEmit(onEvent as any, { type: "fetch:start" });
   const started = Date.now();
 
-  const builder = buildPlannerAgent();
-  const feedbackHistory: FetchFeedback[] = [];
+  const builder = buildQueryCompilerAgent();
+  const requiredFields = triageContext?.requiredFields ?? [];
+  const filterHints = triageContext?.filterHints ?? [];
 
   const baseMsgs = [
     userMsg(message),
     systemMsg(`datasourceLuid=${datasourceLuid}`),
     systemMsg(`ALLOWED_FIELDS_JSON=${JSON.stringify(allowedFields || [])}`),
-    systemMsg(`ANALYSIS_PLAN_JSON=${JSON.stringify(analysisPlan || {})}`),
+    systemMsg(`REQUIRED_FIELDS_JSON=${JSON.stringify(requiredFields || [])}`),
+    systemMsg(`FILTER_HINTS_JSON=${JSON.stringify(filterHints || [])}`),
   ] as any[];
 
-  if (triageContext?.requiredFields?.length) {
-    baseMsgs.push(systemMsg(`TRIAGE_REQUIRED_FIELDS_JSON=${JSON.stringify(triageContext.requiredFields)}`));
+  if (analysisPlan) {
+    baseMsgs.push(systemMsg(`ANALYSIS_PLAN_JSON=${JSON.stringify(analysisPlan)}`));
   }
-  if (triageContext?.filterHints?.length) {
-    baseMsgs.push(systemMsg(`TRIAGE_FILTER_HINTS_JSON=${JSON.stringify(triageContext.filterHints)}`));
-  }
-  if (fieldAliases && Object.keys(fieldAliases).length > 0) {
+  if (fieldAliases && Object.keys(fieldAliases).length) {
     baseMsgs.push(systemMsg(`FIELD_ALIASES_JSON=${JSON.stringify(fieldAliases)}`));
   }
+
+  const feedbackHistory: Array<{ attempt: number; source: FetchRetrySource; message: string }> = [];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const attemptMsgs = [...baseMsgs];
     if (feedbackHistory.length) {
-      const recent = feedbackHistory.slice(-3);
-      attemptMsgs.push(systemMsg(`BUILDER_FEEDBACK_JSON=${JSON.stringify(recent)}`));
+      attemptMsgs.push(systemMsg(`BUILDER_FEEDBACK_JSON=${JSON.stringify(feedbackHistory.slice(-3))}`));
     }
     attemptMsgs.push(systemMsg(`ATTEMPT_INDEX=${attempt}`));
 
-    let builderOutputText = "";
+    let builderOutput = "";
     try {
       const res = await run(builder, attemptMsgs);
-      builderOutputText =
+      builderOutput =
         typeof (res as any)?.finalOutput === "string" && (res as any).finalOutput
           ? (res as any).finalOutput
           : extractAllTextOutput((res as any).output);
     } catch (e: any) {
       const messageText = e?.message || String(e);
       feedbackHistory.push({ attempt, source: "builder", message: messageText });
+      safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "builder", message: messageText } });
       if (attempt >= MAX_ATTEMPTS) {
         safeEmit(onEvent as any, { type: "fetch:error", detail: { message: messageText, durationMs: Date.now() - started } });
-        return { error: messageText, feedback: feedbackHistory };
+        return { error: messageText };
       }
       continue;
     }
 
     let parsed: any = null;
-    try { parsed = JSON.parse(builderOutputText); } catch {}
+    try { parsed = JSON.parse(builderOutput); } catch {}
     const validated = PlannerPayload.safeParse(parsed);
     if (!validated.success) {
       const issue = validated.error?.issues?.[0]?.message || "vizql_builder_validation_failed";
-      feedbackHistory.push({ attempt, source: "builder", message: issue, raw: validated.error.issues });
+      feedbackHistory.push({ attempt, source: "builder", message: issue });
+      safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "builder", message: issue } });
       if (attempt >= MAX_ATTEMPTS) {
         safeEmit(onEvent as any, { type: "fetch:error", detail: { message: issue, durationMs: Date.now() - started } });
-        return { error: issue, feedback: feedbackHistory };
+        return { error: issue };
       }
       continue;
     }
@@ -93,74 +102,79 @@ export async function fetchRunner(params: {
     const preErr = preflightValidateQuery(query);
     if (preErr) {
       feedbackHistory.push({ attempt, source: "preflight", message: preErr });
+      safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "preflight", message: preErr } });
       if (attempt >= MAX_ATTEMPTS) {
         const messageText = `preflight:${preErr}`;
         safeEmit(onEvent as any, { type: "fetch:error", detail: { message: messageText, durationMs: Date.now() - started } });
-        return { error: messageText, feedback: feedbackHistory };
+        return { error: messageText };
       }
       continue;
     }
 
     try {
       const res = await tableauClient.queryDatasource({ datasourceLuid, query });
-      const toText = (v: any): string => {
-        try {
-          if (typeof v === "string") return v;
-          if (Array.isArray(v)) return `rows=${v.length}`;
-          if (v && typeof v === "object") {
-            const keys = ["rows", "data", "results"];
-            for (const k of keys) {
-              const arr = (v as any)[k];
-              if (Array.isArray(arr)) return `${k}=${arr.length}`;
-            }
-            const s = JSON.stringify(v);
-            return s.length > 800 ? s.slice(0, 800) : s;
-          }
-          return String(v);
-        } catch { return "[unserializable fetch result]"; }
-      };
-
-      const summary = toText(res);
+      const summary = summarizeResult(res);
       let artifactPath = "";
       try {
-        const normalized = (() => {
-          try {
-            if (Array.isArray(res) && res.length > 0 && res[0] && typeof res[0] === "object" && typeof (res[0] as any).text === "string") {
-              const t = (res[0] as any).text as string;
-              try { return JSON.parse(t); } catch { return res; }
-            }
-            if (typeof res === "string") { try { return JSON.parse(res); } catch { return res; } }
-          } catch {}
-          return res;
-        })();
+        const normalized = normalizeResult(res);
         const art = saveVdsJson(normalized);
         artifactPath = art.relPath;
       } catch {}
-
-      safeEmit(onEvent as any, {
-        type: "fetch:done",
-        detail: { summary, artifact: artifactPath || undefined, durationMs: Date.now() - started },
-      });
-      return { fetchedSummary: summary, artifactPath, feedback: feedbackHistory };
+      safeEmit(onEvent as any, { type: "fetch:done", detail: { summary, artifact: artifactPath || undefined, durationMs: Date.now() - started } });
+      return { fetchedSummary: summary, artifactPath };
     } catch (e: any) {
-      const rawMessage = e?.message || String(e);
-      let parsedError: any = null;
-      try { parsedError = JSON.parse(rawMessage); } catch {}
-      const feedback: FetchFeedback = {
-        attempt,
-        source: "tableau",
-        message: parsedError?.message || rawMessage,
-        raw: parsedError || rawMessage,
-      };
-      feedbackHistory.push(feedback);
+      const raw = e?.message || String(e);
+      const parsedError = tryParseJson(raw);
+      const messageText = parsedError?.message || raw;
+      feedbackHistory.push({ attempt, source: "tableau", message: messageText });
+      safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "tableau", message: messageText } });
       if (attempt >= MAX_ATTEMPTS) {
-        safeEmit(onEvent as any, { type: "fetch:error", detail: { message: feedback.message, durationMs: Date.now() - started } });
-        return { error: feedback.message, feedback: feedbackHistory };
+        safeEmit(onEvent as any, { type: "fetch:error", detail: { message: messageText, durationMs: Date.now() - started } });
+        return { error: messageText };
       }
     }
   }
 
   const fallback = feedbackHistory.length ? feedbackHistory[feedbackHistory.length - 1].message : "fetch_failed";
   safeEmit(onEvent as any, { type: "fetch:error", detail: { message: fallback, durationMs: Date.now() - started } });
-  return { error: fallback, feedback: feedbackHistory };
+  return { error: fallback };
+}
+
+function summarizeResult(res: any): string {
+  try {
+    if (typeof res === "string") return res;
+    if (Array.isArray(res)) return `rows=${res.length}`;
+    if (res && typeof res === "object") {
+      for (const key of ["rows", "data", "results"]) {
+        const maybe = (res as any)[key];
+        if (Array.isArray(maybe)) return `${key}=${maybe.length}`;
+      }
+      const serialized = JSON.stringify(res);
+      return serialized.length > 800 ? serialized.slice(0, 800) : serialized;
+    }
+    return String(res);
+  } catch {
+    return "[unserializable fetch result]";
+  }
+}
+
+function normalizeResult(res: any): any {
+  try {
+    if (Array.isArray(res) && res.length > 0 && res[0] && typeof res[0] === "object" && typeof (res[0] as any).text === "string") {
+      const text = (res[0] as any).text as string;
+      return JSON.parse(text);
+    }
+    if (typeof res === "string") {
+      return JSON.parse(res);
+    }
+  } catch {}
+  return res;
+}
+
+function tryParseJson(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
