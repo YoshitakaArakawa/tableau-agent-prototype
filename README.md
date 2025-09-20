@@ -31,8 +31,8 @@ pm run build, and configure the MCP client with stdio transport.
 
 ### 2. Clone the repository
 ```bash
-git clone https://github.com/YoshitakaArakawa/tableau-agent
-cd tableau-agent
+git clone https://github.com/YoshitakaArakawa/tableau-agent-prototype
+cd tableau-agent-prototype
 ```
 
 ### 3. Install project dependencies
