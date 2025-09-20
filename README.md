@@ -77,9 +77,4 @@ Browse to `http://localhost:8787` to use the UI.
 - Architecture references and roadmap material are maintained within the internal documentation bundle to keep the README focused on setup.
 
 ## License
-Released under the ISC license as declared in `package.json`.
-
-
-
-
-
+This project is licensed under the MIT License - see the LICENSE file for details.
