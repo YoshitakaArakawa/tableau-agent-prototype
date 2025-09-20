@@ -1,65 +1,85 @@
 # Tableau Agent Prototype
 
-A local-first prototype that combines the OpenAI Agents SDK with a Tableau MCP server to answer ad-hoc questions against Tableau datasources. The current build targets experimentation on a developer workstation: both the HTTP orchestrator and Tableau MCP server run locally, and no cloud services (other than OpenAI APIs) are involved.
+A local-first prototype that combines the OpenAI Agents SDK with a Tableau MCP server to answer ad-hoc questions against Tableau datasources. The current build targets workstation experimentation: both the HTTP orchestrator and Tableau MCP server run locally, and no external services are required beyond OpenAI APIs.
 
-## Key Features
-- **Single-turn orchestration** - Triage, field selection, VizQL compilation, Tableau execution, and summarization happen inside `src/orchestrator/run.ts` with per-phase event logging.
-- **Triage-driven planning** - The triage agent emits at most two lightweight analysis steps plus optional follow-up suggestions, keeping downstream work fast.
-- **VizQL retries with MCP feedback** - The query compiler replays Tableau MCP validation errors to repair filters, aggregations, or field selections automatically.
-- **Dual summarization paths** - Lightweight summaries handle small extracts; larger artifacts trigger Code Interpreter (CI) with guarded timeouts and fallbacks.
-- **Telemetry hooks** - All phases emit structured events (durations, retries, CI outcomes) to the SSE stream and `logs/analysis.txt` for debugging.
+## Project Overview
+The agent accepts natural-language prompts, plans lightweight Tableau analyses, executes VizQL queries via Tableau MCP, and returns Markdown summaries. The orchestrator streams per-phase events over Server-Sent Events (SSE) so the UI can surface total elapsed time alongside phase durations once timing metadata becomes available.
 
-## Repository Layout
-- `src/` - Orchestrator, agents, Tableau MCP client, summarization logic, and utilities.
-- `prompts/` - XML prompts for the triage, field-selector, vizql-builder, and summarizer agents.
-- `frontend/` - Minimal browser UI that streams events and renders final answers.
-- `docs/specs/` - Architecture references (`overview-asis.md`, `overview-tobe.md`, `agent-flow.html`).
-- `logs/` - Runtime artifacts (analysis log, VizQL JSON exports, cached metadata).
+## Why Tableau MCP?
+Tableau MCP provides transport-agnostic tools for querying Tableau metadata and datasources. By pairing it with the Agents SDK, this prototype keeps orchestration logic in TypeScript while delegating query execution and validation to Tableau-native tooling.
+
+## Core Features
+- **Triage-driven planning** capped at two analysis steps with optional follow-up suggestions.
+- **Field selection guardrails** that honor required fields and filter hints from triage output.
+- **VizQL retries with feedback loops** that replay Tableau validation errors into the builder prompt.
+- **Dual summarization paths** that fall back from Code Interpreter to lightweight summaries when needed.
+- **Streaming telemetry** that emits structured SSE events and maintains a local analysis log for debugging.
 
 ## Prerequisites
-- **Node.js 18+** and npm.
 - **OpenAI API access** for the Agents SDK and Code Interpreter.
-- **Tableau MCP server** running locally with stdio transport (for example [`tableau_mcp_starter_kit`](https://github.com/tableau-mcp/tableau_mcp_starter_kit)).
-- Tableau credentials (PAT, site, server URL) with permission to query the target datasource.
+- **Tableau MCP server** running locally with stdio transport.
+- Tableau credentials (PAT, site, server URL) that can query the target datasource.
 
-## Setup
-1. Clone this repository and install dependencies:
-   ```bash
-   git clone https://github.com/YoshitakaArakawa/tableau-agent
-   cd tableau-agent
-   npm install
-   ```
-2. Copy `.env_template` to `.env` and fill in:
-   - Tableau connection details (`TRANSPORT`, `SERVER`, `SITE_NAME`, `PAT_*`).
-   - Local MCP path (`TABLEAU_MCP_FILEPATH`) pointing to your Tableau MCP server entry script.
-   - `OPENAI_API_KEY` for the Agents SDK.
-   Optional knobs include `TABLEAU_CLIENT_TIMEOUT_MS`, `SUMMARIZE_CI_TIMEOUT_MS`, and logging toggles.
-3. Install and start the Tableau MCP server (separate terminal):
-   - Follow the MCP project instructions (typically `npm install`, `npm run build`, then `npm start -- --transport stdio`).
-   - Ensure the server is reachable at the path referenced by `TABLEAU_MCP_FILEPATH`.
-4. Launch the agent server:
-   ```bash
-   npm run dev
-   ```
-   The server listens on `http://localhost:8787` and clears `logs/analysis.txt` on startup.
+## Data Handling Warning
+Tableau data is relayed to OpenAI services during summarization. For learning or testing, rely on public or de-identified datasets (for example Tableau's Sample Superstore) that are safe to share with AI providers.
 
-## Usage
-1. Open `http://localhost:8787/` in your browser.
-2. Provide a valid `datasourceLuid` and enter a natural-language question (for example "Compare 2024 vs 2023 sales by region").
-3. Watch the stream panel for per-phase updates (triage, field selection, fetch, summarization) and review the final Markdown answer. Artifacts are stored under `logs/vdsapi_json/` for inspection.
-4. Send follow-up questions using the same conversation to reuse metadata, analysis plans, and artifacts cached in memory.
+## Installation
+### 1. Prepare Node.js, npm, and Tableau MCP
+Follow Tableau's official [Getting Started guide](https://tableau.github.io/tableau-mcp/docs/getting-started) to install Node.js, run 
+pm install and 
+pm run build, and configure the MCP client with stdio transport.
 
-## Development Notes
-- Agents, prompts, and model assignments are defined in `config/models.json` and `prompts/*.xml`.
-- The orchestrator logs every event to `logs/analysis.txt`; use `tail -f` for real-time tracing.
-- Docs in `docs/specs/` track the as-is architecture, future roadmap, and sequence diagrams.
-- Run `npm run dev` with `NODE_ENV=development` (default) to enable verbose logging and CI retries.
+### 2. Clone the repository
+```bash
+git clone https://github.com/YoshitakaArakawa/tableau-agent
+cd tableau-agent
+```
 
-## Known Limitations
-- Designed for local experimentation; there is no persistence layer beyond process memory.
-- UI has limited visualization for timing data (per-phase durations are emitted but not fully rendered).
-- CI workloads may time out on very large extracts; lightweight fallbacks provide partial answers.
-- Security hardening (CORS tightening, authentication) is out of scope for this prototype.
+### 3. Install project dependencies
+```bash
+npm install
+```
+*The included `package.json` already depends on `@openai/agents` and `zod@3`. If you need to reinstall them manually, run `npm install @openai/agents zod@3`.*
+
+### 4. Launch the developer server
+```bash
+npm run dev
+```
+Browse to `http://localhost:8787` to use the UI.
+
+## Configuration
+1. Copy `.env_template` to a private secrets file and keep it out of source control.
+2. Populate Tableau connection details (server URL, site, PAT name/value), the local MCP entry path, and your OpenAI API key.
+3. Optional settings include client timeouts, summarization timeouts, and logging toggles surfaced in the template.
+4. Restart the developer server whenever configuration values change.
+
+## Running the Agent
+### Browser workflow
+1. Navigate to `http://localhost:8787/`.
+2. Provide a valid `datasourceLuid` and submit a natural-language question.
+3. Observe the stream panel as triage, field selection, VizQL execution, and summarization progress; final answers render in Markdown.
+4. Submit follow-up questions in the same session to reuse cached metadata and the latest triage context.
+
+### End-to-end trial checklist
+- Confirm the triage plan emits no more than two steps and includes optional follow-up suggestions when appropriate.
+- Verify the stream panel renders elapsed time once `durationMs` values arrive for each phase.
+- Inspect the local analysis log to correlate retries, feedback, and CI fallbacks with what the UI displays.
+
+## Telemetry and Troubleshooting
+- SSE events include `metadata`, `triage`, `selector`, `fetch`, `summarize`, and `final` phases with retry counts and timing data.
+- VizQL build failures append Tableau validation errors to the retry payload; repeated failures often indicate missing filters or unsupported aggregations.
+- When Code Interpreter times out, the orchestrator falls back to lightweight summaries and notes the fallback reason in the final event payload.
+
+## Development Workflow
+- Agent prompts live under `prompts/*.xml`, and model routing is configured in `config/models.json`.
+- The orchestrator entry point (`src/orchestrator/run.ts`) wires triage, selector, VizQL builder, Tableau execution, and summarization phases.
+- For a detailed phase-by-phase walkthrough, open `agent-flow.html` at the repository root.
+- Architecture references and roadmap material are maintained within the internal documentation bundle to keep the README focused on setup.
 
 ## License
 Released under the ISC license as declared in `package.json`.
+
+
+
+
+
