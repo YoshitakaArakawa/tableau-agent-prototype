@@ -15,6 +15,8 @@
   const apiBase = urlBase.endsWith('/') ? urlBase.slice(0, -1) : urlBase;
   const maybeTableau = (() => { try { return typeof tableau !== 'undefined' ? tableau : undefined; } catch { return undefined; } })();
 
+  const createConversationId = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   let es = null;
   let typingTimer = null;
   let conversationId = null;
@@ -297,15 +299,28 @@
         renderTimes();
       },
       setTotal: (ms) => { totalMs = ms; renderTimes(); },
-      finalize: () => { panel.open = true; },
+      finalize: () => { panel.open = false; sum.textContent = 'Run complete (click to expand)'; },
     };
   }
 
-  function stop(){
+  async function stop(){
     if (es) { es.close(); es = null; }
     if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
-    sendBtn.disabled = false;
     stopBtn.disabled = true;
+    sendBtn.disabled = false;
+    const currentId = conversationId;
+    if (currentId) {
+      try {
+        await fetch(`${apiBase}/chat/orchestrator/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: currentId }),
+        });
+        clientLog.add(`stop:sent ${currentId}`);
+      } catch (err) {
+        clientLog.add(`stop:failed ${err?.message || err}`);
+      }
+    }
   }
 
   function start(){
@@ -322,6 +337,11 @@
 
     resetChips();
     setChip('triage','active');
+
+    if (!conversationId) {
+      conversationId = createConversationId();
+      try { localStorage.setItem('chat-conv-id', conversationId); } catch {}
+    }
 
     const url = new URL(`${apiBase}/chat/orchestrator/stream`);
     url.searchParams.set('message', message);
@@ -527,3 +547,5 @@
   stopBtn.addEventListener('click', stop);
   msgEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); } });
 })();
+
+

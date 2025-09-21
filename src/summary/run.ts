@@ -16,9 +16,10 @@ type SummarizeParams = {
   artifactPaths: string[];
   analysisContext?: any;
   onEvent?: (ev: { type: string; detail?: any }) => void;
+  abortSignal?: AbortSignal;
 };
 
-type SummarizeResult = { reply: string };
+type SummarizeResult = { reply?: string; cancelled?: boolean };
 
 type CIOutcome =
   | { status: "success"; text: string; durationMs: number }
@@ -26,9 +27,51 @@ type CIOutcome =
   | { status: "empty"; durationMs: number }
   | { status: "error"; durationMs: number; error: string };
 
+function createAbortRunner(abortSignal?: AbortSignal) {
+  return async function runWithAbort<T>(factory: () => Promise<T>): Promise<{ value?: T; cancelled?: boolean }> {
+    if (!abortSignal) {
+      const value = await factory();
+      return { value };
+    }
+    if (abortSignal.aborted) {
+      return { cancelled: true };
+    }
+    return await new Promise<{ value?: T; cancelled?: boolean }>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        abortSignal.removeEventListener('abort', onAbort);
+        resolve({ cancelled: true });
+      };
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      const promise = factory();
+      promise.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          abortSignal.removeEventListener('abort', onAbort);
+          resolve({ value });
+        },
+        (err) => {
+          if (settled) return;
+          settled = true;
+          abortSignal.removeEventListener('abort', onAbort);
+          reject(err);
+        }
+      );
+    });
+  };
+}
+
 export async function summarize(params: SummarizeParams): Promise<SummarizeResult> {
-  const { message, artifactPaths, analysisContext, onEvent } = params;
+  const { message, artifactPaths, analysisContext, onEvent, abortSignal } = params;
   const plan: AnalysisPlan | undefined = analysisContext?.analysisPlan;
+
+  const runWithAbort = createAbortRunner(abortSignal);
+  if (abortSignal?.aborted) {
+    return { cancelled: true };
+  }
 
   let shouldCI = false;
   let ciReason: string | undefined;
@@ -56,7 +99,11 @@ export async function summarize(params: SummarizeParams): Promise<SummarizeResul
       artifacts: artifactPaths.length,
       timeoutMs: ciTimeoutMs,
     });
-    const outcome = await attemptCI({ message, artifactPaths, analysisContext }, ciTimeoutMs);
+    const raceResult = await runWithAbort(() => attemptCI({ message, artifactPaths, analysisContext, onEvent }, ciTimeoutMs));
+    if (raceResult.cancelled) {
+      return { cancelled: true };
+    }
+    const outcome = raceResult.value!;
     switch (outcome.status) {
       case "success":
         emit(onEvent, "summarize:ci:done", {
@@ -89,11 +136,19 @@ export async function summarize(params: SummarizeParams): Promise<SummarizeResul
     }
   }
 
+  if (abortSignal?.aborted) {
+    return { cancelled: true };
+  }
+
   emit(onEvent, "summarize:lightweight:start", {
     reason: fallbackReason,
     artifacts: artifactPaths.length,
   });
-  const raw = await summarizeLightweight(message, artifactPaths, analysisContext);
+  const lightResult = await runWithAbort(() => summarizeLightweight(message, artifactPaths, analysisContext));
+  if (lightResult.cancelled) {
+    return { cancelled: true };
+  }
+  const raw = lightResult.value ?? "";
   emit(onEvent, "summarize:lightweight:done", {
     reason: fallbackReason,
     chars: raw?.length ?? 0,
@@ -102,13 +157,12 @@ export async function summarize(params: SummarizeParams): Promise<SummarizeResul
 }
 
 async function attemptCI(
-  params: { message: string; artifactPaths: string[]; analysisContext?: any },
-  timeoutMs: number,
-  onEvent?: (ev: { type: string; detail?: any }) => void
+  params: { message: string; artifactPaths: string[]; analysisContext?: any; onEvent?: (ev: { type: string; detail?: any }) => void },
+  timeoutMs: number
 ): Promise<CIOutcome> {
   const started = Date.now();
   try {
-    const ciPromise = summarizeWithCI({ ...params, onEvent });
+    const ciPromise = summarizeWithCI(params);
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
       timeoutHandle = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
@@ -132,10 +186,3 @@ async function attemptCI(
     return { status: "error", durationMs, error: err?.message || String(err) };
   }
 }
-
-
-
-
-
-
-

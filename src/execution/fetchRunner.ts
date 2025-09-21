@@ -30,11 +30,17 @@ export async function fetchRunner(params: {
   triageContext?: { requiredFields?: string[]; filterHints?: FilterHint[] } | null;
   fieldAliases?: Record<string, string>;
   onEvent?: (ev: { type: string; detail?: any }) => void;
-}): Promise<{ fetchedSummary?: string; artifactPath?: string; error?: string }>
+  abortSignal?: AbortSignal;
+}): Promise<{ fetchedSummary?: string; artifactPath?: string; error?: string; cancelled?: boolean }>
 {
-  const { datasourceLuid, message, analysisPlan, allowedFields, triageContext, fieldAliases, onEvent } = params;
+  const { datasourceLuid, message, analysisPlan, allowedFields, triageContext, fieldAliases, onEvent, abortSignal } = params;
   safeEmit(onEvent as any, { type: "fetch:start" });
   const started = Date.now();
+
+  const isAborted = () => Boolean(abortSignal?.aborted);
+  if (isAborted()) {
+    return { cancelled: true };
+  }
 
   const builder = buildQueryCompilerAgent();
   const requiredFields = triageContext?.requiredFields ?? [];
@@ -58,6 +64,10 @@ export async function fetchRunner(params: {
   const feedbackHistory: Array<{ attempt: number; source: FetchRetrySource; message: string }> = [];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (isAborted()) {
+      return { cancelled: true };
+    }
+
     const attemptMsgs = [...baseMsgs];
     if (feedbackHistory.length) {
       attemptMsgs.push(systemMsg(`BUILDER_FEEDBACK_JSON=${JSON.stringify(feedbackHistory.slice(-3))}`));
@@ -72,6 +82,9 @@ export async function fetchRunner(params: {
           ? (res as any).finalOutput
           : extractAllTextOutput((res as any).output);
     } catch (e: any) {
+      if (isAborted()) {
+        return { cancelled: true };
+      }
       const messageText = e?.message || String(e);
       feedbackHistory.push({ attempt, source: "builder", message: messageText });
       safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "builder", message: messageText } });
@@ -99,6 +112,10 @@ export async function fetchRunner(params: {
     const payload = validated.data;
     const query = payload.query;
 
+    if (isAborted()) {
+      return { cancelled: true };
+    }
+
     const preErr = preflightValidateQuery(query);
     if (preErr) {
       feedbackHistory.push({ attempt, source: "preflight", message: preErr });
@@ -111,8 +128,25 @@ export async function fetchRunner(params: {
       continue;
     }
 
+    if (isAborted()) {
+      return { cancelled: true };
+    }
+
     try {
-      const res = await tableauClient.queryDatasource({ datasourceLuid, query });
+      const res = await tableauClient.queryDatasource({ datasourceLuid, query, signal: abortSignal });
+      if (isAborted()) {
+        return { cancelled: true };
+      }
+      const tableauError = extractTableauError(res);
+      if (tableauError) {
+        feedbackHistory.push({ attempt, source: "tableau", message: tableauError });
+        safeEmit(onEvent as any, { type: "fetch:retry", detail: { attempt, source: "tableau", message: tableauError } });
+        if (attempt >= MAX_ATTEMPTS) {
+          safeEmit(onEvent as any, { type: "fetch:error", detail: { message: tableauError, durationMs: Date.now() - started } });
+          return { error: tableauError };
+        }
+        continue;
+      }
       const summary = summarizeResult(res);
       let artifactPath = "";
       try {
@@ -123,6 +157,9 @@ export async function fetchRunner(params: {
       safeEmit(onEvent as any, { type: "fetch:done", detail: { summary, artifact: artifactPath || undefined, durationMs: Date.now() - started } });
       return { fetchedSummary: summary, artifactPath };
     } catch (e: any) {
+      if (isAborted() || e?.name === "AbortError" || e?.message === "aborted") {
+        return { cancelled: true };
+      }
       const raw = e?.message || String(e);
       const parsedError = tryParseJson(raw);
       const messageText = parsedError?.message || raw;
@@ -158,6 +195,69 @@ function summarizeResult(res: any): string {
   }
 }
 
+function extractTableauError(res: any): string | null {
+  try {
+    if (res == null) return null;
+    const candidates: string[] = [];
+    const inspect = (value: any, requireErrorKeyword = false) => {
+      if (value == null) return;
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) return;
+        const hasErrorToken = /error|exception|invalid|denied|failed/i.test(trimmed);
+        if (!requireErrorKeyword || hasErrorToken) {
+          candidates.push(trimmed);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) inspect(item, requireErrorKeyword);
+        return;
+      }
+      if (typeof value === "object") {
+        if (typeof value.error === "string" && value.error.trim()) {
+          candidates.push(value.error.trim());
+        }
+        if (typeof value.message === "string") {
+          const message = value.message.trim();
+          if (message && /error|exception|invalid|denied|failed/i.test(message)) {
+            candidates.push(message);
+          }
+        }
+        if (typeof value.text === "string") {
+          const text = value.text.trim();
+          if (text && /error|exception|invalid|denied|failed/i.test(text)) {
+            candidates.push(text);
+          }
+        }
+        if (Array.isArray((value as any).errors)) {
+          inspect((value as any).errors, requireErrorKeyword);
+        }
+        if (typeof (value as any).status === "string" && (value as any).status.toLowerCase() === "error") {
+          if (typeof (value as any).detail === "string" && (value as any).detail.trim()) {
+            candidates.push((value as any).detail.trim());
+          } else if (typeof (value as any).message === "string" && (value as any).message.trim()) {
+            candidates.push((value as any).message.trim());
+          }
+        }
+      }
+    };
+    if (typeof res === "string") {
+      try {
+        const parsed = JSON.parse(res);
+        const nested = extractTableauError(parsed);
+        if (nested) return nested;
+      } catch {}
+      inspect(res);
+    } else {
+      inspect(res);
+    }
+    return candidates.length ? candidates[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeResult(res: any): any {
   try {
     if (Array.isArray(res) && res.length > 0 && res[0] && typeof res[0] === "object" && typeof (res[0] as any).text === "string") {
@@ -178,3 +278,4 @@ function tryParseJson(value: string) {
     return null;
   }
 }
+
