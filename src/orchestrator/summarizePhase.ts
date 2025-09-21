@@ -7,17 +7,26 @@ export async function summarizePhase(params: {
   artifactPaths: string[];
   analysisContext?: any;
   onEvent?: (ev: OrchestratorEvent) => void;
-}): Promise<{ reply: string }>
+  abortSignal?: AbortSignal;
+}): Promise<{ reply?: string; cancelled?: boolean }>
 {
-  const { message, artifactPaths, analysisContext, onEvent } = params;
+  const { message, artifactPaths, analysisContext, onEvent, abortSignal } = params;
+  if (abortSignal?.aborted) {
+    return { cancelled: true };
+  }
   safeEmit(onEvent, { type: "summarize:start", detail: { artifacts: artifactPaths } });
   const started = Date.now();
-  const { reply } = await summarize({
+  const result = await summarize({
     message,
     artifactPaths,
     analysisContext,
     onEvent,
+    abortSignal,
   });
+  if (result.cancelled) {
+    return { cancelled: true };
+  }
+  const reply = result.reply ?? "";
   safeEmit(onEvent, { type: "final", detail: { reply, durationMs: Date.now() - started } });
   return { reply };
 }

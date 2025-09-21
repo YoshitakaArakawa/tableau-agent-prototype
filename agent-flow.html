@@ -126,7 +126,6 @@
 <body>
   <div class="wrap">
     <header>
-      <span class="badge">Updated 2025-09-19</span>
       <div>
         <h1>Tableau Agent - Runtime Flow</h1>
         <p class="lead">Current orchestration after merging the analysis planner into triage and enabling VizQL retries driven by Tableau MCP feedback.</p>
@@ -228,10 +227,12 @@ flowchart TD
           <h2>Implementation Notes</h2>
           <ul>
             <li><strong>Session management</strong>: In-memory `sessionStore` keyed by `conversationId`; artifacts and triage context persist across follow-up turns.</li>
+            <li><strong>Stop handling</strong>: Companion `controllerStore` keeps per-conversation AbortControllers so POST /chat/orchestrator/stop can cancel streams and dispose heartbeats.</li>
             <li><strong>Triage</strong>: Produces <=2 plan steps plus `future_suggestions`; emits `plan:done` rather than calling a separate planner.</li>
             <li><strong>Field selector</strong>: Receives `MAX_N` (currently 3) from the orchestrator and honors triage-required fields and filter hints.</li>
             <li><strong>VizQL compilation</strong>: `fetchRunner` orchestrates builder retries, Zod validation, preflight checks, and Tableau MCP execution.</li>
             <li><strong>Summarization</strong>: `summary/run.ts` toggles between lightweight and CI based on plan/row thresholds and surfaces CI timeouts as fallbacks.</li>
+            <li><strong>UI finish</strong>: Streaming panel auto-collapses after the final reply and relabels its summary to emphasize completion while leaving timings available.</li>
             <li><strong>Logging</strong>: `logs/analysis.txt` captures every orchestrator event, retry payload, and summarization outcome.</li>
             <li><strong>Configuration</strong>: Requires `TABLEAU_MCP_FILEPATH` and `OPENAI_API_KEY`; optional timeouts and log paths are read from the environment.</li>
           </ul>

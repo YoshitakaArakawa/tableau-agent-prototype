@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { getTableauMcp } from "../mcp/tableau";
 import { appendAnalysisLog } from "./logger";
+import { extractResultJson } from "./mcp";
 
 export type NormalizedField = {
   fieldCaption: string;
@@ -101,26 +102,6 @@ function normalizeFromReadMetadata(raw: any): NormalizedField[] {
   return out;
 }
 
-function extractResultJson(result: any): any {
-  try {
-    if (Array.isArray(result)) {
-      const jsonItem = result.find((r) => r && r.type === 'json');
-      if (jsonItem && (jsonItem.value !== undefined || jsonItem.data !== undefined)) {
-        return jsonItem.value ?? jsonItem.data;
-      }
-      const textItems = result.filter((r) => r && r.type === 'text' && typeof r.text === 'string');
-      const joined = textItems.map((t: any) => t.text).join('\n').trim();
-      if (joined) return JSON.parse(joined);
-    }
-    if (result && typeof result === 'object') {
-      if (result.ok && 'value' in result) return (result as any).value;
-      if ('value' in result) return (result as any).value;
-      if ('result' in result) return (result as any).result;
-    }
-  } catch {}
-  return undefined;
-}
-
 function normalizeFields(raw: any): NormalizedField[] {
   if (Array.isArray(raw?.data)) return normalizeFromReadMetadata(raw);
   if (Array.isArray(raw?.fields)) return normalizeFromReadMetadata({ data: raw.fields });
@@ -181,3 +162,5 @@ let lastErrorMsg: string | null = null;
 export function getLastMetadataError(): string | null {
   return lastErrorMsg;
 }
+
+

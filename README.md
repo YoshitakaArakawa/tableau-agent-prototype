@@ -14,10 +14,12 @@ Tableau MCP provides transport-agnostic tools for querying Tableau metadata and 
 - **VizQL retries with feedback loops** that replay Tableau validation errors into the builder prompt.
 - **Dual summarization paths** that fall back from Code Interpreter to lightweight summaries when needed.
 - **Streaming telemetry** that emits structured SSE events and maintains a local analysis log for debugging.
+- **Dashboard Extension integration** that switches to Tableau Extensions API mode to auto-resolve datasource LUIDs when the agent is loaded inside a dashboard.
 
 ## Prerequisites
 - **OpenAI API access** for the Agents SDK and Code Interpreter.
 - **Tableau MCP server** running locally with stdio transport.
+- Tableau Desktop or Server with Extensions enabled (use **Access Local Extensions** to load the local manifest; see the Dashboard Extensions API overview).
 - Tableau credentials (PAT, site, server URL) that can query the target datasource.
 
 ## Data Handling Warning
@@ -65,6 +67,16 @@ Browse to `http://localhost:8787` to use the UI.
 - Verify the stream panel renders elapsed time once `durationMs` values arrive for each phase.
 - Inspect the local analysis log to correlate retries, feedback, and CI fallbacks with what the UI displays.
 
+## Using as a Tableau Dashboard Extension
+
+When the development server is running you can embed the agent UI inside a Tableau dashboard:
+
+1. In Tableau Desktop (or web authoring) open the dashboard, choose **Dashboard > Extensions...**, and then select **Access Local Extensions**.
+2. Pick a .trex manifest that targets the running server (for example one that points at http://localhost:8787/index.html).
+3. Approve the extension when prompted. The status pill in the agent UI switches to \"Tableau Extension\" once the Extensions API connects and datasource LUIDs are collected automatically.
+4. Ask questions as usual. If the Extensions API is unavailable, the UI falls back to manual LUID entry and surfaces a warning.
+
+For more background on Tableau extension capabilities and publishing workflows, review Tableau's Dashboard Extensions API learning resources: https://www.tableau.com/ja-jp/developer/learning/dashboard-and-viz-extensions-api.
 ## Telemetry and Troubleshooting
 - SSE events include `metadata`, `triage`, `selector`, `fetch`, `summarize`, and `final` phases with retry counts and timing data.
 - VizQL build failures append Tableau validation errors to the retry payload; repeated failures often indicate missing filters or unsupported aggregations.
@@ -78,3 +90,4 @@ Browse to `http://localhost:8787` to use the UI.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
+

@@ -10,6 +10,7 @@ import { clearAnalysisLog } from './utils/logger';
 import { setTracingDisabled } from '@openai/agents';
 import { loadDotEnvFromProjectRoot } from './utils/env';
 import { createInitialSessionState, type SessionState } from './types/session';
+import { resolveDatasourcesByNames } from './data/datasourceList';
 
 // Load .env (no extra deps) and disable Agents SDK tracing
 loadDotEnvFromProjectRoot();
@@ -17,11 +18,12 @@ setTracingDisabled(true);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 8787;
 const sessionStore = new Map<string, SessionState>();
+const controllerStore = new Map<string, AbortController>();
 
 function setCors(res: http.ServerResponse) {
   try {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   } catch {}
 }
@@ -51,6 +53,39 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
 
 
 
+
+async function readBody(req: http.IncomingMessage): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => {
+      if (typeof chunk === "string") {
+        chunks.push(Buffer.from(chunk));
+      } else if (chunk) {
+        chunks.push(Buffer.from(chunk));
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', (err) => reject(err));
+  });
+}
+
+async function readJsonBody(req: http.IncomingMessage): Promise<any> {
+  const raw = await readBody(req);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    (err as any).code = 'INVALID_JSON';
+    throw err;
+  }
+}
 function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   // CORS for file:// or other origins
   setCors(res);
@@ -70,12 +105,21 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
 
   const requestedConversationId = u.searchParams.get('conversationId') || undefined;
   let conversationId = requestedConversationId || randomUUID();
+  const existingController = controllerStore.get(conversationId);
+  if (existingController) {
+    try { existingController.abort(); } catch {}
+    controllerStore.delete(conversationId);
+  }
+
   const existingState = sessionStore.get(conversationId);
   const isNewSession = !existingState;
   const state = existingState ?? createInitialSessionState();
   if (isNewSession) {
     sessionStore.set(conversationId, state);
   }
+
+  const controller = new AbortController();
+  controllerStore.set(conversationId, controller);
 
   const send = (ev: { type: string; detail?: any }) => {
     try { res.write('data: ' + JSON.stringify(ev) + '\n\n'); } catch {}
@@ -86,19 +130,34 @@ function handleSse(req: http.IncomingMessage, res: http.ServerResponse) {
   }
 
   const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 15000);
-  orchestrate({ message, datasourceLuid, state, onEvent: (ev) => send(ev) })
+  orchestrate({ message, datasourceLuid, state, onEvent: (ev) => send(ev), abortSignal: controller.signal })
     .then((result) => {
       sessionStore.set(conversationId, result.nextState);
+      const current = controllerStore.get(conversationId);
+      if (current === controller) {
+        controllerStore.delete(conversationId);
+      }
       clearInterval(hb);
       res.end();
     })
     .catch((e) => {
+      const current = controllerStore.get(conversationId);
+      if (current === controller) {
+        controllerStore.delete(conversationId);
+      }
       clearInterval(hb);
       send({ type: 'error', detail: { message: e?.message || String(e) } });
       res.end();
     });
 
-  req.on('close', () => { try { clearInterval(hb); } catch {} });
+  req.on('close', () => {
+    try { clearInterval(hb); } catch {}
+    const current = controllerStore.get(conversationId);
+    if (current === controller) {
+      controllerStore.delete(conversationId);
+      try { controller.abort(); } catch {}
+    }
+  });
 }
 const server = http.createServer(async (req, res) => {
   try {
@@ -111,6 +170,54 @@ const server = http.createServer(async (req, res) => {
     }
     if (method === 'GET' && (u.pathname === '/chat/orchestrator/stream')) {
       return handleSse(req, res);
+    }
+    if (method === 'POST' && u.pathname === '/datasources/resolve') {
+      setCors(res);
+      try {
+        const body = await readJsonBody(req);
+        const names = Array.isArray(body?.names) ? body.names : undefined;
+        const items = await resolveDatasourcesByNames(names);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ items }));
+      } catch (e: any) {
+        const err = e ?? {};
+        const status = err?.code === 'INVALID_JSON' ? 400
+          : err?.message === 'tableau_mcp_not_configured' ? 503
+          : 500;
+        const message = err?.code === 'INVALID_JSON' ? 'invalid_json' : err?.message || 'Internal Error';
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: message }));
+      }
+      return;
+    }
+    if (method === 'POST' && u.pathname === '/chat/orchestrator/stop') {
+      setCors(res);
+      try {
+        const body = await readJsonBody(req);
+        const conversationId = typeof body?.conversationId === 'string' ? body.conversationId.trim() : '';
+        if (!conversationId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'conversationId_required' }));
+          return;
+        }
+        const controller = controllerStore.get(conversationId);
+        if (controller) {
+          try { controller.abort(); } catch {}
+          controllerStore.delete(conversationId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, cancelled: true }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, cancelled: false }));
+        }
+      } catch (e: any) {
+        const err = e ?? {};
+        const status = err?.code === 'INVALID_JSON' ? 400 : 500;
+        const message = err?.code === 'INVALID_JSON' ? 'invalid_json' : err?.message || 'Internal Error';
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: message }));
+      }
+      return;
     }
     if (method === 'GET' && (u.pathname === '/' || u.pathname === '/index.html' || u.pathname.startsWith('/styles') || u.pathname.startsWith('/main') )) {
       return serveStatic(req, res);
@@ -168,7 +275,5 @@ async function shutdown(signal: string) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-
-
 
 

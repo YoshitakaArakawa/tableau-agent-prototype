@@ -19,9 +19,10 @@ export async function orchestrate(params: {
   datasourceLuid: string;
   onEvent?: (ev: OrchestratorEvent) => void;
   state?: SessionState;
+  abortSignal?: AbortSignal;
 }): Promise<{ reply: string; artifactPaths?: string[]; nextState: SessionState }>
 {
-  const { message, datasourceLuid, onEvent, state } = params;
+  const { message, datasourceLuid, onEvent, state, abortSignal } = params;
 
   const triage = buildTriageAgent();
   const selector = buildFieldSelectorAgent();
@@ -48,6 +49,23 @@ export async function orchestrate(params: {
     triageContext: baseState.triageContext,
   };
 
+  const isAborted = () => Boolean(abortSignal?.aborted);
+  const finishCancelled = () => {
+    const reply = "Run stopped by user.";
+    safeEmit(onEvent as any, { type: "final", detail: { reply, cancelled: true } });
+    const assistantTurn = assistantMsg(reply);
+    const nextState: SessionState = {
+      ...workingState,
+      history: [...workingState.history, assistantTurn],
+    };
+    return { reply, artifactPaths: [], nextState };
+  };
+
+  if (isAborted()) {
+    return finishCancelled();
+  }
+
+
   const cachedFields = baseState.metadata && baseState.metadata.datasourceLuid === datasourceLuid
     ? baseState.metadata.fields
     : undefined;
@@ -68,6 +86,7 @@ export async function orchestrate(params: {
     metadata: { datasourceLuid, fields: normalizedFields },
   };
 
+
   const tri = await triagePhase({
     message,
     triageAgent: triage,
@@ -80,6 +99,7 @@ export async function orchestrate(params: {
     ...workingState,
     triageContext: tri.context,
   };
+
 
   if (tri.clarifyReply) {
     const reply = tri.clarifyReply;
@@ -102,6 +122,11 @@ export async function orchestrate(params: {
     history: historyBefore,
     onEvent,
   });
+
+  if (isAborted()) {
+    return finishCancelled();
+  }
+
 
   if (allowedFieldsResult.clarify) {
     const detail = {
@@ -149,6 +174,11 @@ export async function orchestrate(params: {
     });
   }
 
+  if (isAborted()) {
+    return finishCancelled();
+  }
+
+
   const fetched = await fetchRunner({
     datasourceLuid,
     message,
@@ -157,7 +187,16 @@ export async function orchestrate(params: {
     triageContext: workingState.triageContext,
     fieldAliases: allowedFieldsResult.suggestedAliases,
     onEvent,
+    abortSignal,
   });
+
+  if (fetched.cancelled) {
+    return finishCancelled();
+  }
+
+  if (isAborted()) {
+    return finishCancelled();
+  }
 
   if (fetched.error) {
     const reply = fetched.error || "Failed to fetch data.";
@@ -177,18 +216,31 @@ export async function orchestrate(params: {
   }
 
   if (artifactPaths.length > 0) {
+    if (isAborted()) {
+      return finishCancelled();
+    }
+
     const sum = await summarizePhase({
       message,
       artifactPaths,
       analysisContext: workingState.analysisPlan ? { analysisPlan: workingState.analysisPlan } : undefined,
       onEvent,
+      abortSignal,
     });
-    const assistantTurn = assistantMsg(sum.reply);
+    if (sum.cancelled) {
+      return finishCancelled();
+    }
+    const summaryReply = sum.reply ?? "";
+    const assistantTurn = assistantMsg(summaryReply);
     const nextState: SessionState = {
       ...workingState,
       history: [...workingState.history, assistantTurn],
     };
-    return { reply: sum.reply, artifactPaths, nextState };
+    return { reply: summaryReply, artifactPaths, nextState };
+  }
+
+  if (isAborted()) {
+    return finishCancelled();
   }
 
   const reply = fetched.fetchedSummary || "No artifact available for summarization.";
