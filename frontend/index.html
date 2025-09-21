@@ -9,28 +9,41 @@
   <body>
     <header class="topbar">
       <div class="brand">Tableau Chat</div>
+      <div id="integrationStatus" class="status-pill" role="status" aria-live="polite">Standalone</div>
     </header>
+
+    <section class="controls" aria-label="Query controls">
+      <div class="controls-content">
+        <div class="question-wrapper">
+          <label for="message">Question</label>
+          <textarea id="message" rows="4" placeholder="Type your message (Shift+Enter for newline)">Compare 2024 sales against 2023, summarize the overall change. This will support the annual report.</textarea>
+        </div>
+        <div class="side-panel">
+          <div id="datasourceSelectBlock" class="datasource-block" hidden>
+            <label for="datasourceSelect">Datasource</label>
+            <div class="datasource-actions">
+              <select id="datasourceSelect"></select>
+              <button id="refreshDatasourcesBtn" type="button" class="secondary">Refresh</button>
+            </div>
+          </div>
+          <div id="datasourceInputBlock" class="datasource-block">
+            <label for="datasourceLuid">Datasource LUID (fallback)</label>
+            <input id="datasourceLuid" type="text" placeholder="Enter datasource LUID" />
+          </div>
+          <div class="control-buttons">
+            <button id="sendBtn" type="button">Send</button>
+            <button id="stopBtn" type="button" class="secondary" disabled>Stop</button>
+          </div>
+          <div id="datasourceStatus" class="control-status"></div>
+        </div>
+      </div>
+    </section>
 
     <main class="container">
       <section id="chat" class="chat" aria-live="polite"></section>
     </main>
 
-    <footer class="composer">
-      <div class="composer-inner">
-        <textarea id="message" rows="3" placeholder="Type your message (Shift+Enter for newline)">Compare 2024 sales against 2023, summarize the overall change. This will support the annual report.</textarea>
-        <div class="composer-actions">
-          <button id="sendBtn">Send</button>
-          <button id="stopBtn" disabled>Stop</button>
-        </div>
-      </div>
-      <div id="advanced" class="advanced">
-        <label>
-          Datasource LUID
-          <input id="datasourceLuid" type="text" placeholder="Enter datasource LUID" />
-        </label>
-      </div>
-    </footer>
-
-    <script src="main.js"></script>
+    <script src="tableau.extensions.1.latest.js" defer></script>
+    <script src="main.js" defer></script>
   </body>
-  </html>
+</html>

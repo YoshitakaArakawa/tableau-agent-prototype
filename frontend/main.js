@@ -5,11 +5,22 @@
   const sendBtn = $('sendBtn');
   const stopBtn = $('stopBtn');
   const luidEl = $('datasourceLuid');
+  const dsSelectBlock = $('datasourceSelectBlock');
+  const dsSelect = $('datasourceSelect');
+  const manualBlock = $('datasourceInputBlock');
+  const refreshDatasourcesBtn = $('refreshDatasourcesBtn');
+  const dsStatus = $('datasourceStatus');
+  const integrationStatusEl = $('integrationStatus');
   const urlBase = new URLSearchParams(location.search).get('base') || 'http://localhost:8787';
+  const apiBase = urlBase.endsWith('/') ? urlBase.slice(0, -1) : urlBase;
+  const maybeTableau = (() => { try { return typeof tableau !== 'undefined' ? tableau : undefined; } catch { return undefined; } })();
 
   let es = null;
   let typingTimer = null;
   let conversationId = null;
+  let lastDatasourceItems = [];
+  let integrationMode = 'standalone';
+  let collectingDatasources = false;
   try { conversationId = localStorage.getItem('chat-conv-id') || null; } catch {}
 
   // restore saved advanced
@@ -24,12 +35,156 @@
     } catch {}
   }
 
+  function setStatus(detail, level) {
+    if (!dsStatus) return;
+    dsStatus.textContent = detail || '';
+    dsStatus.className = 'control-status';
+    if (level === 'warn') dsStatus.classList.add('warn');
+    else if (level === 'error') dsStatus.classList.add('error');
+  }
+
+  function setIntegrationStatus(mode, detail, level) {
+    integrationMode = mode;
+    if (integrationStatusEl) {
+      integrationStatusEl.className = 'status-pill';
+      if (mode === 'extension') integrationStatusEl.classList.add('success');
+      else if (mode === 'error') integrationStatusEl.classList.add('error');
+      else if (mode === 'connecting') integrationStatusEl.classList.add('busy');
+      const label = mode === 'extension' ? 'Tableau Extension'
+        : mode === 'connecting' ? 'Connecting...'
+        : mode === 'error' ? 'Extension Error'
+        : 'Standalone';
+      integrationStatusEl.textContent = label;
+    }
+    if (typeof detail === 'string') {
+      setStatus(detail, level);
+    }
+  }
+
+  function getActiveDatasourceLuid() {
+    const selectValue = dsSelect && !dsSelect.hidden && dsSelect.options?.length ? dsSelect.value : '';
+    const manual = (luidEl?.value || '').trim();
+    return selectValue || manual;
+  }
+
+  function populateDatasourceOptions(items) {
+    if (!dsSelect) return;
+    lastDatasourceItems = Array.isArray(items) ? items : [];
+    dsSelect.innerHTML = '';
+    for (const item of lastDatasourceItems) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.projectName ? `${item.name} - ${item.projectName}` : item.name;
+      dsSelect.appendChild(option);
+    }
+    if (dsSelectBlock) dsSelectBlock.hidden = lastDatasourceItems.length === 0;
+    if (lastDatasourceItems.length) {
+      const current = getActiveDatasourceLuid();
+      const match = lastDatasourceItems.find((item) => item.id === current);
+      const value = match ? match.id : lastDatasourceItems[0].id;
+      dsSelect.value = value;
+      if (luidEl) {
+        luidEl.value = value;
+        persist();
+      }
+    }
+  }
+
   // Client log: do not render in UI; log to console for diagnostics only
   const clientLog = { add: (text) => { try { console.log(`[client] ${text}`); } catch {} } };
 
   // Step chips are removed; keep no-op helpers for compatibility
   function setChip(_step, _state) {}
   function resetChips() {}
+
+  async function collectDashboardDatasourceNames() {
+    if (!maybeTableau?.extensions) return [];
+    try {
+      const dashboard = maybeTableau.extensions.dashboardContent?.dashboard;
+      if (!dashboard) return [];
+      const names = new Set();
+      const worksheets = Array.isArray(dashboard.worksheets) ? dashboard.worksheets : [];
+      await Promise.all(worksheets.map(async (ws) => {
+        try {
+          const list = await ws.getDataSourcesAsync();
+          list.forEach((ds) => {
+            const name = typeof ds?.name === 'string' ? ds.name.trim() : '';
+            if (name) names.add(name);
+          });
+        } catch (err) {
+          clientLog.add(`extensions:worksheet_error ${err?.message || err}`);
+        }
+      }));
+      return Array.from(names);
+    } catch (err) {
+      clientLog.add(`extensions:collect_failed ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  async function requestDatasourceResolution(names) {
+    const payload = Array.isArray(names) && names.length ? { names } : {};
+    const res = await fetch(`${apiBase}/datasources/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = typeof json?.error === 'string' ? json.error : 'Failed to resolve datasources via server.';
+      throw new Error(message);
+    }
+    return Array.isArray(json?.items) ? json.items : [];
+  }
+
+  async function refreshDatasourceList(reason) {
+    if (!maybeTableau?.extensions) return;
+    if (collectingDatasources) return;
+    collectingDatasources = true;
+    try {
+      setIntegrationStatus('extension', reason || 'Resolving datasources...');
+      const names = await collectDashboardDatasourceNames();
+      if (!names.length) {
+        populateDatasourceOptions([]);
+        setIntegrationStatus('extension', 'No datasources detected on this dashboard.', 'warn');
+        if (manualBlock) manualBlock.hidden = false;
+        return;
+      }
+      const items = await requestDatasourceResolution(names);
+      populateDatasourceOptions(items);
+      if (items.length) {
+        setIntegrationStatus('extension', 'Datasource resolved from dashboard.');
+        if (manualBlock) manualBlock.hidden = false;
+      } else {
+        setIntegrationStatus('extension', 'No matching published datasource. Provide LUID manually.', 'warn');
+        if (manualBlock) manualBlock.hidden = false;
+      }
+    } catch (err) {
+      setIntegrationStatus('error', err?.message || 'Datasource resolution failed.', 'error');
+      if (manualBlock) manualBlock.hidden = false;
+      clientLog.add(`extensions:resolve_failed ${err?.message || err}`);
+    } finally {
+      collectingDatasources = false;
+    }
+  }
+
+  async function initializeExtensionsIntegration() {
+    if (!maybeTableau?.extensions) {
+      setIntegrationStatus('standalone', 'Extensions API not detected. Provide datasource LUID manually.');
+      if (manualBlock) manualBlock.hidden = false;
+      return;
+    }
+    try {
+      setIntegrationStatus('connecting', 'Initializing Tableau Extensions API...');
+      await maybeTableau.extensions.initializeAsync();
+      setIntegrationStatus('extension', 'Extensions API connected. Resolving datasources...');
+      await refreshDatasourceList();
+    } catch (err) {
+      setIntegrationStatus('error', err?.message || 'Extension initialization failed. Enter LUID manually.', 'error');
+      if (manualBlock) manualBlock.hidden = false;
+      clientLog.add(`extensions:init_failed ${err?.message || err}`);
+    }
+  }
 
   function escapeHtml(s){ return String(s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
   function renderMarkdown(text){
@@ -87,10 +242,8 @@
     times.appendChild(timesTitle);
     times.appendChild(totalLine);
     times.appendChild(timeList);
-    // Natural-language narration (smaller text)
     const narr = document.createElement('div');
     narr.className = 'stream-narr';
-    // Raw deltas (for debug/partial text if any)
     const delta = document.createElement('pre');
     delta.className = 'stream-delta';
     panel.appendChild(sum);
@@ -126,86 +279,41 @@
       addWarn: (text) => { const p = document.createElement('div'); p.className = 'warn'; p.textContent = text; events.appendChild(p); },
       narrStart: (key, text) => {
         try {
-          if (!narrLines[key]) {
-            const line = document.createElement('div');
-            line.className = 'narr-line';
-            line.textContent = text;
-            narr.appendChild(line);
-            narrLines[key] = line;
-          } else {
-            narrLines[key].textContent = text;
-          }
+          narrLines[key] = text;
+          narr.textContent = Object.values(narrLines).join('\n');
         } catch {}
       },
-      narrAppend: (key, extra) => {
+      narrAppend: (key, text) => {
         try {
-          const line = narrLines[key];
-          if (line) {
-            line.textContent = (line.textContent || '') + ' ' + extra;
-          } else {
-            // fallback: create
-            const l = document.createElement('div');
-            l.className = 'narr-line';
-            l.textContent = extra;
-            narr.appendChild(l);
-            narrLines[key] = l;
-          }
+          const prev = narrLines[key] || '';
+          narrLines[key] = prev ? `${prev} ${text}` : text;
+          narr.textContent = Object.values(narrLines).join('\n');
         } catch {}
       },
       updateDuration: (key, label, ms) => {
-        const dur = toDurationMs(ms);
-        if (dur === null) return;
-        let existing = null;
-        for (const entry of durations) {
-          if (entry.key === key) { existing = entry; break; }
-        }
-        if (existing) {
-          existing.ms = dur;
-          existing.label = label;
-        } else {
-          durations.push({ key, label, ms: dur });
-        }
+        const existing = durations.find((d) => d.key === key);
+        if (existing) existing.ms = ms;
+        else durations.push({ key, label, ms });
         renderTimes();
       },
-      setTotal: (ms) => {
-        const dur = toDurationMs(ms);
-        if (dur === null) return;
-        totalMs = dur;
-        renderTimes();
-      },
-      finalize: () => { sum.textContent = 'Streaming complete'; panel.open = false; renderTimes(); },
+      setTotal: (ms) => { totalMs = ms; renderTimes(); },
+      finalize: () => { panel.open = true; },
     };
   }
 
-  function narrateStep(type, detail){
-    const map = {
-      'triage:start': 'Reviewing your question and intent...',
-      'triage:done': 'Clarification captured.',
-      'metadata:start': 'Looking up the dataset’s fields...',
-      'metadata:done': 'Metadata is ready.',
-      'plan:start': 'Mapping out the analysis steps...',
-      'plan:done': 'Analysis plan prepared; compiling the query.',
-      'fetch:start': 'Executing the VizQL query...',
-      'fetch:done': 'Data fetch complete.',
-      'summarize:start': 'Summarizing the findings...'
-    };
-    let line = map[type];
-    // Add a compact description of what will be fetched when plan is done
-    try {
-      if (type === 'plan:done') {
-        const qs = detail && typeof detail.query_summary === 'string' ? detail.query_summary : '';
-        if (qs) line = `${line} I will compute ${qs}.`;
-      }
-    } catch {}
-    if (line) return line + '\n';
-    return '';
+  function stop(){
+    if (es) { es.close(); es = null; }
+    if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
+    sendBtn.disabled = false;
+    stopBtn.disabled = true;
   }
 
   function start(){
     if (es) es.close();
     const message = msgEl.value.trim();
-    const luid = luidEl.value.trim();
+    const luid = getActiveDatasourceLuid().trim();
     if (!message) return;
+    if (!luid) { setStatus('Datasource LUID is required.', 'error'); return; }
     persist();
 
     bubble('user', escapeHtml(message));
@@ -215,10 +323,9 @@
     resetChips();
     setChip('triage','active');
 
-    const base = urlBase.replace(/\/$/,'');
-    const url = new URL(`${base}/chat/orchestrator/stream`);
+    const url = new URL(`${apiBase}/chat/orchestrator/stream`);
     url.searchParams.set('message', message);
-    if (luid) url.searchParams.set('datasourceLuid', luid);
+    url.searchParams.set('datasourceLuid', luid);
     if (conversationId) url.searchParams.set('conversationId', conversationId);
 
     clientLog.add(`connect ${url.toString()}`);
@@ -243,7 +350,6 @@
           case 'clarify:request': {
             const detail = data?.detail || {};
             let text = detail.text || detail.note || 'Clarification is required.';
-            // Render candidates as a numbered list when present
             try {
               if (Array.isArray(detail.candidates) && detail.candidates.length) {
                 const lines = detail.candidates.map((c, i) => `${i+1}. ${c.fieldCaption || c}`);
@@ -265,7 +371,7 @@
             if (ms !== null) stream.updateDuration('triage', 'Triage', ms);
             break;
           }
-          case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset’s fields...'); } break;
+          case 'metadata:start': setChip('metadata','active'); { stream.narrStart('metadata', 'Looking up the dataset fields...'); } break;
           case 'triage:delta': stream.appendDelta(`[triage] ${data?.detail?.text || ''}`); break;
           case 'metadata:delta': stream.appendDelta(`[metadata] ${data?.detail?.text || ''}`); break;
           case 'plan:delta': stream.appendDelta(`[plan] ${data?.detail?.text || ''}`); break;
@@ -280,7 +386,8 @@
           case 'selector:done': {
             const detail = data?.detail || {};
             if (Array.isArray(detail.fields) && detail.fields.length) {
-              stream.addNote(`Fields selected: ${detail.fields.join(', ')}`);
+              const names = detail.fields.join(', ');
+              clientLog.add(`selector:fields ${names}`);
             }
             const ms = toDurationMs(detail.durationMs);
             if (ms !== null) stream.updateDuration('selector', 'Field selection', ms);
@@ -343,7 +450,8 @@
             if (typeof attempt === 'number') contextParts.push(`attempt ${attempt}`);
             if (typeof source === 'string' && source) contextParts.push(source);
             const prefix = contextParts.length ? `Fetch retry (${contextParts.join(' / ')})` : 'Fetch retry';
-            stream.addWarn(msg ? `${prefix}: ${msg}` : prefix);
+            const warnText = msg ? `${prefix}: ${msg}` : prefix;
+            clientLog.add(`stream:${warnText}`);
             break; }
           case 'fetch:done': {
             setChip('fetch','done');
@@ -367,8 +475,6 @@
             es?.close();
             es = null;
             stream.finalize();
-            es?.close();
-            es = null;
             bubble('assistant', renderMarkdown(text));
             clientLog.add('stream closed (ok)');
             break; }
@@ -388,12 +494,31 @@
     };
   }
 
-  function stop(){
-    if (es) { es.close(); es = null; }
-    if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
-    sendBtn.disabled = false;
-    stopBtn.disabled = true;
+  if (dsSelect) {
+    dsSelect.addEventListener('change', () => {
+      const value = dsSelect.value;
+      if (luidEl) {
+        luidEl.value = value;
+        persist();
+      }
+      const selectedLabel = dsSelect.options?.length ? dsSelect.options[dsSelect.selectedIndex]?.text : value;
+      setStatus(selectedLabel ? `Datasource selected: ${selectedLabel}` : 'Datasource updated.');
+    });
   }
+
+  if (refreshDatasourcesBtn) {
+    refreshDatasourcesBtn.addEventListener('click', () => {
+      if (!maybeTableau?.extensions) {
+        setIntegrationStatus('standalone', 'Extensions API not available. Provide LUID manually.', 'warn');
+        return;
+      }
+      refreshDatasourceList('Refreshing datasources...');
+    });
+  }
+
+  setIntegrationStatus('standalone', 'Enter datasource LUID manually.');
+  if (manualBlock) manualBlock.hidden = false;
+  initializeExtensionsIntegration();
 
   const autosize = () => { msgEl.style.height = 'auto'; msgEl.style.height = Math.min(180, msgEl.scrollHeight) + 'px'; };
   msgEl.addEventListener('input', autosize); autosize();
@@ -402,11 +527,3 @@
   stopBtn.addEventListener('click', stop);
   msgEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); } });
 })();
-
-
-
-
-
-
-
-
